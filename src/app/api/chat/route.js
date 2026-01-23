@@ -1,39 +1,30 @@
 import { NextResponse } from 'next/server';
+import Groq from "groq-sdk";
 
 export async function POST(req) {
+  // 1. Anahtar Kontrolü
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json({ error: "Sunucu Hatası: API Anahtarı eksik." }, { status: 500 });
+  }
+
   try {
-    // Frontend'den gelen prompt'u al
-    const { prompt } = await req.json();
-    const apiKey = process.env.NEXT_PUBLIC_GROQ_API_KEY;
+    const groq = new Groq({ apiKey: apiKey });
+    const body = await req.json();
 
-    if (!apiKey) {
-      return NextResponse.json({ error: "API Anahtarı Sunucuda Bulunamadı" }, { status: 500 });
-    }
-
-    // Groq'a isteği SUNUCU (Backend) atıyor. CORS derdi yok!
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.5
-      })
+    // 2. Groq İsteği (GÜNCEL MODEL)
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [{ role: "user", content: body.prompt }],
+      // model: "llama3-8b-8192", // ❌ ESKİSİ (Bunu sildik)
+      model: "llama-3.3-70b-versatile", // ✅ YENİSİ (Canavar gibi çalışır)
+      temperature: 0.5,
+      max_tokens: 1024,
     });
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      return NextResponse.json({ error: data.error?.message || "Groq API Hatası" }, { status: response.status });
-    }
-
-    // Cevabı Frontend'e geri yolla
-    return NextResponse.json({ content: data.choices[0].message.content });
+    return NextResponse.json({ content: chatCompletion.choices[0]?.message?.content || "" });
 
   } catch (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Groq Hatası:", error);
+    return NextResponse.json({ error: "Yapay zeka yanıt veremedi: " + error.message }, { status: 500 });
   }
 }
