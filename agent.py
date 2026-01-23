@@ -152,9 +152,13 @@ def check_signatures_batch(file_paths):
     for i in range(0, len(file_paths), chunk_size):
         chunk = file_paths[i:i + chunk_size]
         paths_str = ",".join(["'" + p.replace("'", "''") + "'" for p in chunk])
-        cmd = f"$files = @({paths_str}); $files | ForEach-Object {{ try {{ $sig = Get-AuthenticodeSignature $_ -ErrorAction Stop; \"$_|$($sig.Status)\" }} catch {{ \"$_|Unknown\" }} }}"
+        
         try:
+            # DÜZELTME: Tırnak çakışmasını önlemek için 3 tırnak (f""") kullanıldı
+            cmd = f"""$files = @({paths_str}); $files | ForEach-Object {{ try {{ $sig = Get-AuthenticodeSignature $_ -ErrorAction Stop; "$_|$($sig.Status)" }} catch {{ "$_|Unknown" }} }}"""
+            
             r = subprocess.run(["powershell", "-Command", cmd], capture_output=True, creationflags=0x08000000, timeout=20)
+            
             for line in r.stdout.decode('utf-8', 'ignore').splitlines():
                 if '|' in line:
                     path, status = line.rsplit('|', 1)
@@ -309,7 +313,7 @@ class ModernAgentApp(tk.Tk):
             
             try: ip = requests.get('https://api.ipify.org', timeout=3).text
             except: ip = "Bilinmiyor"
-            c, r, d = int(psutil.cpu_percent(interval=None) or 0), int(psutil.virtual_memory().percent), int(psutil.disk_usage('/').percent)
+            c, r, d = int(psutil.cpu_percent(interval=1) or 0), int(psutil.virtual_memory().percent), int(psutil.disk_usage('/').percent)
 
             final_report = f"**🔍 SOLIDTRACE FORENSIC REPORT**\nID: {self.hwid} | IP: {ip}\n\n{sys_audit}{net_audit}"
             
