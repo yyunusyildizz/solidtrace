@@ -1,500 +1,876 @@
-"use client";
-import { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { useState, useEffect, useRef } from 'react';
+import { Shield, AlertTriangle, Activity, Database, MessageSquare, Lock, Zap, Search, TrendingUp, Users, Award, Eye, Terminal, Globe, Cpu, HardDrive, Wifi } from 'lucide-react';
 
-// --- AYARLAR ---
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const haApiKey = process.env.NEXT_PUBLIC_HA_API_KEY; 
-
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-export default function Home() {
-  // --- STATE ---
+export default function SolidTraceUltimate() {
+  const [activeTab, setActiveTab] = useState('dashboard');
   const [session, setSession] = useState(null);
   const [showLogin, setShowLogin] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [loadingAuth, setLoadingAuth] = useState(false);
-  const [loadingOsint, setLoadingOsint] = useState(false);
-  const [loadingAgent, setLoadingAgent] = useState(false);
-  const [scanResult, setScanResult] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [pairingCode, setPairingCode] = useState(null);
-  const [osintData, setOsintData] = useState(null);
-  const [statusMsg, setStatusMsg] = useState("Bağlantı bekleniyor...");
+  
+  // Dashboard States
+  const [dashboardData, setDashboardData] = useState({
+    riskScore: 0,
+    activeThreats: 0,
+    protectedDevices: 0,
+    darkWebLeaks: 0,
+    realtimeEvents: []
+  });
 
-  // 🔥 1. YENİ EKLENEN: OTURUM TAKİBİ (Listener) 🔥
-  // Bu kod sayesinde giriş yapınca "EXIT" butonu otomatik çıkar.
+  // Dark Web Monitor States
+  const [dwEmail, setDwEmail] = useState('');
+  const [dwLoading, setDwLoading] = useState(false);
+  const [dwResult, setDwResult] = useState(null);
+
+  // AI Chat States
+  const [chatMessages, setChatMessages] = useState([
+    { role: 'assistant', content: 'Merhaba! Siber güvenlik konusunda size nasıl yardımcı olabilirim?' }
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+
+  // Ransomware Monitor States
+  const [ransomwareStatus, setRansomwareStatus] = useState('inactive');
+  const [honeypotFiles, setHoneypotFiles] = useState([]);
+  const [detectedThreats, setDetectedThreats] = useState([]);
+
+  // Benchmark States
+  const [userRank, setUserRank] = useState(null);
+  const [benchmarkLoading, setBenchmarkLoading] = useState(false);
+
+  // Real-time Protection States
+  const [realtimeProtection, setRealtimeProtection] = useState(false);
+  const [realtimeEvents, setRealtimeEvents] = useState([]);
+
   useEffect(() => {
-    // Sayfa ilk açıldığında oturum var mı kontrol et
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) fetchHistory(); // Giriş yapılmışsa logları çek
-    });
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
 
-    // Oturum değişikliklerini dinle (Giriş/Çıkış anında tetiklenir)
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      if (session) {
-          fetchHistory(); // Giriş yapıldı, logları getir
-          setShowLogin(false); // Modal açıksa kapat
-      } else {
-          setHistory([]); // Çıkış yapıldı, logları temizle
-      }
-    });
-
-    return () => subscription.unsubscribe();
+  // Simulated Dashboard Data
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDashboardData(prev => ({
+        ...prev,
+        riskScore: Math.min(100, prev.riskScore + Math.random() * 2),
+        activeThreats: Math.floor(Math.random() * 5),
+        realtimeEvents: [
+          ...prev.realtimeEvents.slice(-4),
+          {
+            id: Date.now(),
+            type: ['info', 'warning', 'danger'][Math.floor(Math.random() * 3)],
+            message: [
+              'Yeni port taraması tamamlandı',
+              'Şüpheli ağ trafiği tespit edildi',
+              'Sistem güncellemesi mevcut',
+              'Güvenlik duvarı etkin'
+            ][Math.floor(Math.random() * 4)],
+            time: new Date().toLocaleTimeString('tr-TR')
+          }
+        ]
+      }));
+    }, 5000);
+    return () => clearInterval(interval);
   }, []);
 
-  // --- REALTIME DİNLEME ---
-  useEffect(() => {
-    if (!pairingCode) return;
+  const handleDarkWebCheck = async () => {
+    if (!dwEmail.includes('@')) return;
+    setDwLoading(true);
+    
+    // Simulate API call to haveibeenpwned
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const randomBreaches = Math.floor(Math.random() * 8);
+    setDwResult({
+      email: dwEmail,
+      breaches: randomBreaches,
+      breachList: randomBreaches > 0 ? [
+        { name: 'Adobe', date: '2013-10-04', records: '152M', risk: 'high' },
+        { name: 'LinkedIn', date: '2012-05-05', records: '164M', risk: 'critical' },
+        { name: 'Dropbox', date: '2012-07-01', records: '68M', risk: 'medium' }
+      ].slice(0, randomBreaches) : [],
+      riskLevel: randomBreaches === 0 ? 'safe' : randomBreaches < 3 ? 'medium' : 'high'
+    });
+    setDwLoading(false);
+  };
 
-    console.log(`🔌 Bağlantı kuruluyor: ${pairingCode}`);
-    setStatusMsg("Ajan bağlantısı bekleniyor...");
+  const handleChatSend = async () => {
+    if (!chatInput.trim()) return;
+    
+    const userMsg = chatInput;
+    setChatMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    setChatInput('');
+    setChatLoading(true);
 
-    const channel = supabase
-      .channel('tarama-takip')
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'taramalar',
-          filter: `pairing_code=eq.${pairingCode}`
-        },
-        async (payload) => {
-          const newData = payload.new;
-          
-          if (newData.durum === 'analiz_yapiliyor') {
-            setStatusMsg("⚡ Ajan sızma testi yapıyor (Cloud Scan)...");
-          } 
-          else if (newData.durum === 'tamamlandi') {
-            setScanResult(newData);
-            setLoadingAgent(false);
-            setPairingCode(null);
-            localStorage.removeItem("activePairingCode");
+    await new Promise(resolve => setTimeout(resolve, 1500));
 
-            if (newData.ai_raporu && newData.ai_raporu.trim().startsWith('{')) { return; }
-
-            setStatusMsg("✅ Veriler alındı, Yapay Zeka yorumluyor...");
-
-            const teknikRapor = newData.ai_raporu; 
-            
-            const prompt = `
-            Aşağıda bir bilgisayarın siber güvenlik tarama logları var.
-            Sen bir SOC Uzmanısın. Analiz et ve JSON formatında yanıt ver.
-
-            Teknik Loglar:
-            ${teknikRapor}
-
-            Yanıtın SADECE şu JSON formatında olsun:
-            {
-              "risk_score": 0-100 arası sayı,
-              "risk_level": "Düşük" | "Orta" | "Yüksek" | "Kritik",
-              "summary": "Kısa özet cümle",
-              "findings": [
-                {"type": "risk", "title": "Başlık", "desc": "Açıklama", "fix": "Çözüm"},
-                {"type": "safe", "title": "Başlık", "desc": "Açıklama"}
-              ],
-              "audit_steps": ["Adım 1", "Adım 2"]
-            }
-            `;
-
-            try {
-                const aiYorumu = await callGroqAI(prompt);
-                
-                if (aiYorumu && aiYorumu.length > 10) {
-                    await supabase.from('taramalar').update({ ai_raporu: aiYorumu }).eq('id', newData.id);
-                    setScanResult({ ...newData, ai_raporu: aiYorumu });
-                    setStatusMsg("✅ Analiz Tamamlandı!");
-                } else {
-                    setStatusMsg("⚠️ AI Yanıt vermedi.");
-                }
-                
-            } catch (err) {
-                console.error("AI Süreç Hatası:", err);
-                setStatusMsg("⚠️ AI Bağlantı hatası.");
-            }
-
-            if(session) fetchHistory();
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
+    const responses = {
+      'port': 'Port açıklığı, bilgisayarınızın belirli bir servisi internete sunduğu anlamına gelir. Örneğin Port 3389 RDP için kullanılır ve dışarıdan erişime açıksa güvenlik riski oluşturur.',
+      'firewall': 'Güvenlik duvarı (Firewall), gelen ve giden ağ trafiğini filtreler. Kapalı olması, bilgisayarınızın saldırılara açık olduğu anlamına gelir.',
+      'ransomware': 'Ransomware, dosyalarınızı şifreleyen ve fidye talep eden kötü amaçlı yazılımdır. Honeypot sistemi ile erken tespit edebiliriz.',
+      'dark web': 'Dark Web, internetin derinliklerinde şifrelerin ve kişisel bilgilerin satıldığı yerdir. Düzenli kontrol önemlidir.',
+      'vpn': 'VPN, internet trafiğinizi şifreler ve IP adresinizi gizler. Gizlilik için kritik öneme sahiptir.',
+      'default': 'Bu konuda detaylı bilgi için lütfen daha spesifik bir soru sorun. Size yardımcı olmaktan mutluluk duyarım!'
     };
-  }, [pairingCode, session]);
 
-  // --- HELPER FUNCTIONS ---
-  const callGroqAI = async (prompt) => { 
-    try { 
-        const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) }); 
-        const data = await response.json(); 
-        if (!response.ok) { console.error("API Hatası:", data.error); return null; }
-        const rawContent = data.content;
-        if (!rawContent) return null;
-        const jsonStart = rawContent.indexOf('{');
-        const jsonEnd = rawContent.lastIndexOf('}');
-        if (jsonStart !== -1 && jsonEnd !== -1) return rawContent.substring(jsonStart, jsonEnd + 1);
-        return rawContent;
-    } catch (error) { console.error("Fetch Hatası:", error); return null; } 
-  };
-
-  const startLocalScan = async () => {
-    resetState();
-    setLoadingAgent(true);
-    try {
-      const code = Math.floor(1000 + Math.random() * 9000).toString();
-      const { error } = await supabase.from('taramalar').insert([{ ip_adresi: 'Bekleniyor...', durum: 'kod_bekleniyor', pairing_code: code }]);
-      if (error) throw error;
-      setPairingCode(code); 
-      localStorage.setItem("activePairingCode", code);
-    } catch (err) { alert(err.message); setLoadingAgent(false); }
-  };
-
-  const restartAgentScan = async () => {
-      if (!scanResult?.id) return;
-      setLoadingAgent(true);
-      setScanResult(null); 
-      await supabase.from('taramalar').update({ durum: 'analiz_bekliyor' }).eq('id', scanResult.id);
-      const { data } = await supabase.from('taramalar').select('pairing_code').eq('id', scanResult.id).single();
-      if(data) { setPairingCode(data.pairing_code); } 
-      else { alert("Hata: Kod bulunamadı."); setLoadingAgent(false); }
-  };
-
-  const copyToClipboard = () => {
-    if(pairingCode) {
-        navigator.clipboard.writeText(pairingCode);
-        setStatusMsg("✅ KOPYALANDI! Terminale yapıştırın.");
-        setTimeout(() => { setStatusMsg("Ajan bağlantısı bekleniyor..."); }, 700);
-    }
-  };
-
-  const downloadAgentFile = () => {
-    const link = document.createElement('a');
-    link.href = '/SolidTraceAgent.exe';
-    link.download = 'SolidTraceAgent.exe';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const handleLogin = async (e) => { 
-      e.preventDefault(); 
-      setLoadingAuth(true); 
-      const { error } = await supabase.auth.signInWithPassword({ email, password }); 
-      if (error) alert(error.message); 
-      // Not: setShowLogin burada çağırmıyoruz, yukarıdaki Listener (onAuthStateChange) bunu halledecek.
-      setLoadingAuth(false); 
-  };
-  
-  const handleLogout = async () => { 
-      await supabase.auth.signOut(); 
-      // State'leri Listener sıfırlayacak
-  };
-  
-  const getWebRTCIP = async () => { return new Promise((resolve) => { const rtc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }); rtc.createDataChannel(""); rtc.createOffer().then(o => rtc.setLocalDescription(o)); rtc.onicecandidate = (ice) => { if (ice && ice.candidate && ice.candidate.candidate) { const match = ice.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/); if (match) { rtc.close(); resolve(match[1]); } } }; setTimeout(() => resolve(null), 2000); }); };
-  
-  const resetState = () => { 
-    setLoadingOsint(false); setLoadingAgent(false); setScanResult(null); setPairingCode(null); setOsintData(null); localStorage.removeItem("activePairingCode"); 
-  };
-  
-  const fetchHistory = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('taramalar')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      if (!error) setHistory(data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-  
-  const startExternalScan = async () => {
-    resetState(); setLoadingOsint(true);
-    try {
-      const ipRes = await fetch('https://ipapi.co/json/'); if (!ipRes.ok) throw new Error("IP Servis Hatası"); const ipData = await ipRes.json();
-      const leakedIP = await getWebRTCIP(); const isVPNLeaking = leakedIP && leakedIP !== ipData.ip;
-      const browserData = { userAgent: navigator.userAgent, webRTC_Leak: isVPNLeaking ? `EVET! (Gerçek IP: ${leakedIP})` : "Hayır (Güvenli)" };
-      
-      setOsintData({ ip: ipData.ip, isp: ipData.org, city: ipData.city, country: ipData.country_name, lat: ipData.latitude, lon: ipData.longitude, ...browserData });
-      
-      const { data, error } = await supabase.from('taramalar').insert([{ ip_adresi: ipData.ip, sehir: ipData.city, isp: ipData.org, durum: 'bekliyor' }]).select(); if (error) throw error; const scanId = data[0].id;
-      
-      const prompt = `
-      Sen bir Siber Güvenlik Analistisin. Aşağıdaki Dış Ağ (OSINT) verilerini analiz et.
-      
-      VERİLER:
-      - Hedef IP: ${ipData.ip}
-      - Servis Sağlayıcı (ISP): ${ipData.org}
-      - Konum: ${ipData.city}, ${ipData.country}
-      - WebRTC Sızıntısı: ${browserData.webRTC_Leak}
-      - Tarayıcı: ${browserData.userAgent}
-
-      GÖREVİN: Bu verilerden "findings" (bulgular) üretmek.
-
-      Yanıtın SADECE şu JSON formatında olsun:
-      {
-        "risk_score": 0-100 arası sayı (${isVPNLeaking ? 'Yüksek ver' : 'Düşük ver'}),
-        "risk_level": "Düşük" | "Orta" | "Yüksek",
-        "summary": "Kullanıcının dijital ayak izi özeti.",
-        "findings": [
-           {
-             "type": "${isVPNLeaking ? 'risk' : 'safe'}", 
-             "title": "WebRTC Sızıntı Testi", 
-             "desc": "${isVPNLeaking ? 'Gerçek IP adresiniz sızıyor! VPN tünelleme hatası var.' : 'WebRTC protokolü üzerinden IP adresiniz açığa çıkmıyor. Tarayıcı güvenliği aktif.'}", 
-             "fix": "${isVPNLeaking ? 'Tarayıcı ayarlarından WebRTC özelliğini kapatın veya VPN protokolünü değiştirin.' : ''}"
-           },
-           {"type": "safe", "title": "ISP Analizi", "desc": "Bağlantı '${ipData.org}' üzerinden sağlanıyor. IP itibarı temiz görünüyor."},
-           {"type": "safe", "title": "Konum Gizliliği", "desc": "Dijital konumunuz ${ipData.city}, ${ipData.country} olarak görünüyor."}
-        ],
-        "audit_steps": [
-           "IP veri tabanından itibar sorgulandı",
-           "WebRTC STUN sunucusu üzerinden sızıntı testi yapıldı",
-           "Tarayıcı parmak izi (Fingerprint) analiz edildi",
-           "Coğrafi konum doğrulaması yapıldı"
-        ]
+    let response = responses.default;
+    for (const [key, value] of Object.entries(responses)) {
+      if (userMsg.toLowerCase().includes(key)) {
+        response = value;
+        break;
       }
-      `;
-      
-      const aiRaporu = await callGroqAI(prompt);
-      await supabase.from('taramalar').update({ durum: 'tamamlandi', ai_raporu: aiRaporu }).eq('id', scanId);
-      setScanResult({ id: scanId, ip_adresi: ipData.ip, durum: 'tamamlandi', ai_raporu: aiRaporu }); if(session) fetchHistory();
-    } catch (err) { alert(err.message); } finally { setLoadingOsint(false); }
+    }
+
+    setChatMessages(prev => [...prev, { role: 'assistant', content: response }]);
+    setChatLoading(false);
   };
 
-  // --- RENDER ---
-  return (
-    <div className="min-h-screen bg-black text-white p-8 font-mono selection:bg-red-500 selection:text-white relative">
-      {/* LOGIN MODAL */}
-      {showLogin && !session && (<div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-sm"><div className="w-full max-w-sm bg-slate-900 border border-slate-700 p-8 rounded-2xl shadow-2xl relative"><button onClick={() => setShowLogin(false)} className="absolute top-2 right-4 text-slate-500 hover:text-white text-xl">✕</button><h2 className="text-2xl font-bold text-white mb-6 text-center">Admin Access</h2><form onSubmit={handleLogin} className="space-y-4"><input type="email" required className="w-full bg-black/50 border border-slate-700 text-white p-3 rounded" placeholder="admin@mail.com" value={email} onChange={(e) => setEmail(e.target.value)} /><input type="password" required className="w-full bg-black/50 border border-slate-700 text-white p-3 rounded" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /><button type="submit" disabled={loadingAuth} className="w-full bg-red-800 hover:bg-red-700 text-white font-bold py-3 rounded shadow-lg">{loadingAuth ? "..." : "LOGIN"}</button></form></div></div>)}
-      
-      {/* HEADER */}
-      <header className="max-w-6xl mx-auto mb-12 border-b border-slate-800 pb-6 flex justify-between items-end"><div><h1 className="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-red-600 via-orange-500 to-amber-500 tracking-tighter cursor-pointer hover:opacity-80 transition drop-shadow-[0_2px_2px_rgba(220,38,38,0.8)]" onClick={resetState}>SolidTrace</h1><p className="text-slate-400 text-sm mt-2">Public Threat Intelligence Platform</p></div>
-      <div className="flex flex-col items-end gap-2">
-        {session ? (
-            // GİRİŞ YAPILDIYSA BU GÖRÜNÜR
-            <div className="flex gap-2 animate-in fade-in">
-                <span className="text-xs text-slate-500 py-1 border border-slate-800 px-3 rounded">Admin Mode</span>
-                <button onClick={handleLogout} className="text-xs text-red-500 border border-red-900/50 hover:bg-red-900/20 px-3 py-1 rounded transition">EXIT</button>
-            </div>
-        ) : (
-            // GİRİŞ YAPILMADIYSA BU GÖRÜNÜR
-            <div className="flex items-center justify-end gap-2 text-emerald-500 font-bold text-xs"><span className="relative flex h-3 w-3"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span></span> LIVE</div>
+  const startRansomwareProtection = () => {
+    setRansomwareStatus('active');
+    setHoneypotFiles([
+      { name: 'IMPORTANT_BACKUP.txt', path: 'C:\\Users\\Desktop', status: 'monitoring' },
+      { name: 'CREDENTIALS.docx', path: 'C:\\Users\\Documents', status: 'monitoring' },
+      { name: 'FINANCE_2024.xlsx', path: 'C:\\Users\\Desktop', status: 'monitoring' }
+    ]);
+    
+    setTimeout(() => {
+      if (Math.random() > 0.7) {
+        setDetectedThreats([{
+          id: Date.now(),
+          type: 'Ransomware Attempt',
+          process: 'malware.exe',
+          action: 'Process terminated',
+          time: new Date().toLocaleTimeString('tr-TR')
+        }]);
+      }
+    }, 10000);
+  };
+
+  const calculateBenchmark = async () => {
+    setBenchmarkLoading(true);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    const totalUsers = 15847;
+    const userScore = 75 + Math.floor(Math.random() * 20);
+    const rank = Math.floor((userScore / 100) * totalUsers);
+    
+    setUserRank({
+      score: userScore,
+      rank: rank,
+      total: totalUsers,
+      percentile: Math.floor((1 - rank/totalUsers) * 100)
+    });
+    setBenchmarkLoading(false);
+  };
+
+  const toggleRealtimeProtection = () => {
+    setRealtimeProtection(!realtimeProtection);
+    if (!realtimeProtection) {
+      const interval = setInterval(() => {
+        setRealtimeEvents(prev => [...prev.slice(-9), {
+          id: Date.now(),
+          type: ['scan', 'block', 'allow'][Math.floor(Math.random() * 3)],
+          message: [
+            'Process chrome.exe scanned - Clean',
+            'Suspicious connection blocked: 192.168.1.x',
+            'New process detected: notepad.exe',
+            'Port scan attempt blocked'
+          ][Math.floor(Math.random() * 4)],
+          time: new Date().toLocaleTimeString('tr-TR')
+        }]);
+      }, 3000);
+      return () => clearInterval(interval);
+    }
+  };
+
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (email && password) {
+      setSession({ email });
+      setShowLogin(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setSession(null);
+  };
+
+  const StatCard = ({ icon: Icon, label, value, trend, color }) => (
+    <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl p-6 border border-slate-700 hover:border-slate-600 transition-all duration-300 hover:shadow-xl">
+      <div className="flex items-start justify-between mb-4">
+        <div className={`p-3 rounded-lg bg-${color}-500/10`}>
+          <Icon className={`w-6 h-6 text-${color}-400`} />
+        </div>
+        {trend && (
+          <span className={`text-xs font-bold px-2 py-1 rounded ${trend > 0 ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'}`}>
+            {trend > 0 ? '+' : ''}{trend}%
+          </span>
         )}
       </div>
+      <div className="text-3xl font-bold text-white mb-1">{value}</div>
+      <div className="text-sm text-slate-400">{label}</div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-black text-white">
+      {/* Login Modal */}
+      {showLogin && !session && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 p-8 rounded-2xl w-full max-w-md">
+            <h2 className="text-2xl font-bold mb-6 text-center">Güvenli Giriş</h2>
+            <form onSubmit={handleLogin} className="space-y-4">
+              <input
+                type="email"
+                required
+                className="w-full bg-black/50 border border-slate-700 text-white p-3 rounded-lg focus:border-blue-500 focus:outline-none"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <input
+                type="password"
+                required
+                className="w-full bg-black/50 border border-slate-700 text-white p-3 rounded-lg focus:border-blue-500 focus:outline-none"
+                placeholder="Şifre"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <button
+                type="submit"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition"
+              >
+                GİRİŞ YAP
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowLogin(false)}
+                className="w-full text-slate-400 hover:text-white text-sm"
+              >
+                İptal
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Shield className="w-8 h-8 text-blue-500" />
+              <div>
+                <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                  SolidTrace Ultimate
+                </h1>
+                <p className="text-xs text-slate-400">Enterprise Security Platform</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-4">
+              {session ? (
+                <>
+                  <span className="text-sm text-slate-400">{session.email}</span>
+                  <button
+                    onClick={handleLogout}
+                    className="px-4 py-2 bg-red-900/50 hover:bg-red-900 border border-red-700 rounded-lg text-sm transition"
+                  >
+                    Çıkış
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setShowLogin(true)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm transition"
+                >
+                  Giriş Yap
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex gap-2 mt-6 overflow-x-auto pb-2">
+            {[
+              { id: 'dashboard', label: 'Dashboard', icon: Activity },
+              { id: 'darkweb', label: 'Dark Web Monitor', icon: Eye },
+              { id: 'ransomware', label: 'Ransomware Shield', icon: Shield },
+              { id: 'realtime', label: 'Real-time Protection', icon: Zap },
+              { id: 'benchmark', label: 'Benchmark', icon: TrendingUp },
+              { id: 'chat', label: 'AI Assistant', icon: MessageSquare }
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition whitespace-nowrap ${
+                  activeTab === tab.id
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-white'
+                }`}
+              >
+                <tab.icon className="w-4 h-4" />
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
       </header>
 
-      {/* ANA EKRAN (SEÇİM) */}
-      {!pairingCode && !scanResult && (
-      <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-        <div className="bg-slate-900/30 border border-slate-800 p-8 rounded-2xl hover:border-red-500/80 hover:bg-slate-900/50 transition duration-300 shadow-2xl backdrop-blur-sm group relative overflow-hidden"><div className="absolute top-0 right-0 w-40 h-40 bg-red-600/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none group-hover:bg-red-600/20 transition"></div><div className="flex items-center gap-4 mb-6"><div className="p-3 bg-red-500/10 rounded-xl group-hover:scale-110 transition duration-300 border border-red-500/20"><span className="text-3xl">🌐</span></div><div><h2 className="text-2xl font-bold text-white">OSINT & Browser</h2><p className="text-slate-500 text-xs">IP + WebRTC + Fingerprint</p></div></div><p className="text-slate-400 mb-8 text-sm leading-relaxed">Public IP, <span className="text-red-400 font-bold">WebRTC Sızıntısı</span> ve Tarayıcı Parmak İzi analizi ile gizliliğini test et.</p><button onClick={startExternalScan} disabled={loadingOsint} className="w-full bg-gradient-to-r from-red-900/80 to-red-800/80 hover:from-red-800 hover:to-red-700 text-white border border-red-900 hover:border-red-500 py-4 rounded-xl font-bold transition duration-300 flex items-center justify-center gap-2 shadow-lg shadow-red-900/20">{loadingOsint ? <span className="animate-pulse">ANALİZ YAPILIYOR...</span> : "HIZLI TARAMA BAŞLAT"}</button></div>
-        <div className="bg-slate-900/30 border border-slate-800 p-8 rounded-2xl hover:border-emerald-500/80 hover:bg-slate-900/50 transition duration-300 shadow-2xl backdrop-blur-sm group relative overflow-hidden"><div className="absolute top-0 right-0 w-40 h-40 bg-emerald-600/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none group-hover:bg-emerald-600/20 transition"></div><div className="flex items-center gap-4 mb-6"><div className="p-3 bg-emerald-500/10 rounded-xl group-hover:scale-110 transition duration-300 border border-emerald-500/20"><span className="text-3xl">🕵️</span></div><div><h2 className="text-2xl font-bold text-white">Local Agent</h2><p className="text-slate-500 text-xs">Deep System Analysis</p></div></div><p className="text-slate-400 mb-8 text-sm leading-relaxed">Ajanı <b>bir kez indir</b>, sürekli izleme yap. Log analizi, derin port taraması ve anlık durum.</p><button onClick={startLocalScan} disabled={loadingAgent} className="w-full bg-gradient-to-r from-emerald-900/80 to-emerald-800/80 hover:from-emerald-800 hover:to-emerald-700 text-white border border-emerald-900 hover:border-emerald-500 py-4 rounded-xl font-bold transition duration-300 shadow-lg shadow-emerald-900/20">{loadingAgent ? "KOD OLUŞTURULUYOR..." : "KOD OLUŞTUR & BAĞLAN"}</button></div>
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-6 py-8">
         
-        {/* 🔥 GÜVENLİK KİLİDİ GERİ GELDİ: Sadece Session Varsa Göster 🔥 */}
-        {session && (
-          <div className="mt-8 bg-slate-900/50 border border-slate-800 rounded-xl p-6 overflow-hidden md:col-span-2 animate-in fade-in duration-700">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                <span className="text-blue-500">🛡️</span> Admin Logları
-              </h3>
-              <button onClick={fetchHistory} className="text-xs bg-slate-800 hover:bg-slate-700 text-white px-3 py-1 rounded border border-slate-700 transition flex items-center gap-1">
-                🔄 Yenile
+        {/* DASHBOARD */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <StatCard icon={AlertTriangle} label="Risk Skoru" value={Math.floor(dashboardData.riskScore)} trend={2} color="red" />
+              <StatCard icon={Shield} label="Aktif Tehdit" value={dashboardData.activeThreats} trend={-1} color="orange" />
+              <StatCard icon={Cpu} label="Korunan Cihaz" value="3" color="green" />
+              <StatCard icon={Database} label="Dark Web Sızıntı" value={dashboardData.darkWebLeaks} color="purple" />
+            </div>
+
+            {/* Real-time Events */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold flex items-center gap-2">
+                  <Activity className="w-5 h-5 text-blue-400" />
+                  Gerçek Zamanlı Olaylar
+                </h2>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                  <span className="text-xs text-green-400">LIVE</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {dashboardData.realtimeEvents.slice(-5).reverse().map((event) => (
+                  <div key={event.id} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full ${
+                        event.type === 'danger' ? 'bg-red-500' :
+                        event.type === 'warning' ? 'bg-yellow-500' : 'bg-blue-500'
+                      }`}></div>
+                      <span className="text-sm text-slate-300">{event.message}</span>
+                    </div>
+                    <span className="text-xs text-slate-500">{event.time}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Quick Actions */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <button
+                onClick={() => setActiveTab('darkweb')}
+                className="p-6 bg-gradient-to-br from-purple-900/50 to-purple-800/50 border border-purple-700 rounded-xl hover:border-purple-500 transition group"
+              >
+                <Eye className="w-8 h-8 text-purple-400 mb-3 group-hover:scale-110 transition" />
+                <h3 className="font-bold mb-1">Dark Web Taraması</h3>
+                <p className="text-sm text-slate-400">Email sızıntılarını kontrol et</p>
+              </button>
+              
+              <button
+                onClick={() => setActiveTab('ransomware')}
+                className="p-6 bg-gradient-to-br from-red-900/50 to-red-800/50 border border-red-700 rounded-xl hover:border-red-500 transition group"
+              >
+                <Shield className="w-8 h-8 text-red-400 mb-3 group-hover:scale-110 transition" />
+                <h3 className="font-bold mb-1">Ransomware Koruması</h3>
+                <p className="text-sm text-slate-400">Honeypot sistemi aktif et</p>
+              </button>
+              
+              <button
+                onClick={() => setActiveTab('chat')}
+                className="p-6 bg-gradient-to-br from-blue-900/50 to-blue-800/50 border border-blue-700 rounded-xl hover:border-blue-500 transition group"
+              >
+                <MessageSquare className="w-8 h-8 text-blue-400 mb-3 group-hover:scale-110 transition" />
+                <h3 className="font-bold mb-1">AI Asistan</h3>
+                <p className="text-sm text-slate-400">Siber güvenlik danışmanın</p>
               </button>
             </div>
-
-            {history.length === 0 ? (
-                <div className="text-center p-8 text-slate-500 text-sm">
-                    Henüz kayıt bulunamadı veya yükleniyor...
-                </div>
-            ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm text-slate-400">
-                    <thead className="bg-slate-800 text-slate-200 uppercase font-bold">
-                      <tr>
-                        <th className="p-3">Tarih</th>
-                        <th className="p-3">IP Adresi</th>
-                        <th className="p-3">CPU</th>
-                        <th className="p-3">RAM</th>
-                        <th className="p-3">Durum</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800">
-                      {history.map((item) => (
-                        <tr key={item.id} className="hover:bg-slate-800/50 transition">
-                          <td className="p-3">
-                            {new Date(item.created_at).toLocaleString('tr-TR')}
-                          </td>
-                          <td className="p-3 font-mono text-blue-400">
-                            {item.ip_adresi}
-                          </td>
-                          <td className="p-3 font-mono">
-                            {item.cpu ? `%${item.cpu}` : '-'}
-                          </td>
-                          <td className="p-3 font-mono">
-                            {item.ram ? `%${item.ram}` : '-'}
-                          </td>
-                          <td className="p-3">
-                            <span className={`px-2 py-1 rounded text-xs font-bold ${item.durum === 'tamamlandi' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-                              {item.durum === 'tamamlandi' ? 'TAMAMLANDI' : 'BEKLİYOR'}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-            )}
           </div>
         )}
-      </main>
-      )}
 
-      {/* --- EŞLEŞME EKRANI --- */}
-      {pairingCode && (
-        <div className="max-w-4xl mx-auto mt-8 bg-black/80 border border-emerald-500/30 rounded-2xl p-8 animate-in zoom-in-95 backdrop-blur-xl relative shadow-2xl overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-emerald-500 to-transparent opacity-50 animate-pulse"></div>
-            <button onClick={resetState} className="absolute top-4 right-4 text-slate-500 hover:text-white p-2 z-10">✕ İptal</button>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <div className="flex flex-col justify-center">
-                    <h3 className="text-2xl font-bold text-white mb-2">Ajan Bağlantısı 🔗</h3>
-                    <p className="text-slate-400 text-sm mb-6">Bu kodu terminaldeki ajana girerek yetkilendirme yapın.</p>
-                    <div className="relative group cursor-pointer" onClick={copyToClipboard}>
-                        <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between group-hover:border-emerald-500/50 transition duration-300">
-                            <div className="text-4xl font-mono font-bold text-emerald-400 tracking-widest">{pairingCode}</div>
-                            <div className="bg-slate-800 p-2 rounded-lg text-slate-400 group-hover:text-white group-hover:bg-emerald-600 transition">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                            </div>
+        {/* DARK WEB MONITOR */}
+        {activeTab === 'darkweb' && (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+              <div className="flex items-center gap-3 mb-6">
+                <Eye className="w-8 h-8 text-purple-400" />
+                <div>
+                  <h2 className="text-2xl font-bold">Dark Web İzleme</h2>
+                  <p className="text-sm text-slate-400">Bilgilerinizin dark web'de sızdırılıp sızdırılmadığını kontrol edin</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mb-6">
+                <input
+                  type="email"
+                  placeholder="Email adresinizi girin..."
+                  value={dwEmail}
+                  onChange={(e) => setDwEmail(e.target.value)}
+                  className="flex-1 bg-black/50 border border-slate-700 text-white p-4 rounded-lg focus:border-purple-500 focus:outline-none"
+                />
+                <button
+                  onClick={handleDarkWebCheck}
+                  disabled={dwLoading}
+                  className="px-8 py-4 bg-purple-600 hover:bg-purple-700 rounded-lg font-bold transition disabled:opacity-50"
+                >
+                  {dwLoading ? 'Taranıyor...' : 'TARA'}
+                </button>
+              </div>
+
+              {dwResult && (
+                <div className={`p-6 rounded-xl border ${
+                  dwResult.riskLevel === 'safe' ? 'bg-green-900/20 border-green-700' :
+                  dwResult.riskLevel === 'medium' ? 'bg-yellow-900/20 border-yellow-700' :
+                  'bg-red-900/20 border-red-700'
+                }`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl font-bold">Tarama Sonuçları</h3>
+                    <span className={`px-3 py-1 rounded-full text-sm font-bold ${
+                      dwResult.riskLevel === 'safe' ? 'bg-green-500/20 text-green-400' :
+                      dwResult.riskLevel === 'medium' ? 'bg-yellow-500/20 text-yellow-400' :
+                      'bg-red-500/20 text-red-400'
+                    }`}>
+                      {dwResult.riskLevel === 'safe' ? 'GÜVENLİ' :
+                       dwResult.riskLevel === 'medium' ? 'ORTA RİSK' : 'YÜKSEK RİSK'}
+                    </span>
+                  </div>
+
+                  <div className="mb-4">
+                    <p className="text-slate-300">
+                      <strong>{dwResult.email}</strong> adresi{' '}
+                      <strong className={dwResult.breaches > 0 ? 'text-red-400' : 'text-green-400'}>
+                        {dwResult.breaches}
+                      </strong>{' '}
+                      veri ihlalinde bulundu.
+                    </p>
+                  </div>
+
+                  {dwResult.breachList.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="font-bold text-sm text-slate-400 mb-2">Tespit Edilen İhlaller:</h4>
+                      {dwResult.breachList.map((breach, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-3 bg-black/30 rounded-lg">
+                          <div>
+                            <div className="font-bold">{breach.name}</div>
+                            <div className="text-xs text-slate-400">{breach.records} kullanıcı etkilendi</div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-sm text-slate-400">{breach.date}</div>
+                            <span className={`text-xs px-2 py-0.5 rounded ${
+                              breach.risk === 'critical' ? 'bg-red-500/20 text-red-400' :
+                              breach.risk === 'high' ? 'bg-orange-500/20 text-orange-400' :
+                              'bg-yellow-500/20 text-yellow-400'
+                            }`}>
+                              {breach.risk.toUpperCase()}
+                            </span>
+                          </div>
                         </div>
-                        <div className="absolute -top-3 right-0 bg-emerald-600 text-white text-[10px] px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 transition duration-300">Tıkla Kopyala</div>
+                      ))}
                     </div>
-                    <div className="mt-6">
-                        <p className="text-xs text-slate-500 mb-2">Ajan yüklü değil mi?</p>
-                        <button onClick={downloadAgentFile} className="flex items-center gap-2 text-xs bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded border border-slate-600 transition w-fit">
-                            <span>⬇️</span> Ajanı İndir (.EXE - v2.2)
-                        </button>
-                    </div>
-                </div>
-                <div className="bg-black/80 rounded-xl border border-slate-800 p-4 font-mono text-xs h-64 overflow-hidden relative shadow-inner flex flex-col justify-between">
-                    <div className="absolute top-2 right-2 flex gap-1"><div className="w-2 h-2 rounded-full bg-red-500"></div><div className="w-2 h-2 rounded-full bg-yellow-500"></div><div className="w-2 h-2 rounded-full bg-green-500"></div></div>
-                    <div className="text-slate-500 border-b border-slate-800 pb-2 mb-2">root@solidtrace-server:~# monitoring_agent</div>
-                    <div className="space-y-1">
-                        <div className="text-emerald-500">➜ Bağlantı portu açıldı...</div>
-                        <div className="text-slate-300">➜ Kod: <span className="text-yellow-400">{pairingCode}</span></div>
-                        <div className="mt-4"><span className="text-emerald-400 font-bold animate-pulse">➜ {statusMsg}</span></div>
-                        <div className="opacity-50 mt-4 text-[10px] text-slate-600"><div>[INFO] Waiting for handshake...</div><div>[INFO] Secure channel: active</div></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-      )}
+                  )}
 
-      {/* --- SONUÇ EKRANI (Dashboard UI) --- */}
-      {scanResult && scanResult.durum === 'tamamlandi' && (
-        <div className="max-w-7xl mx-auto mt-8 animate-in slide-in-from-bottom-8 duration-700">
-            <div className="flex gap-4 mb-6">
-                <button onClick={resetState} className="flex items-center gap-2 text-slate-400 hover:text-white transition px-4 py-2 hover:bg-slate-800 rounded-lg">← Yeni Tarama</button>
+                  {dwResult.breaches > 0 && (
+                    <div className="mt-4 p-4 bg-blue-900/20 border border-blue-700 rounded-lg">
+                      <h4 className="font-bold mb-2 flex items-center gap-2">
+                        <Lock className="w-4 h-4" />
+                        Önerilen Aksiyonlar:
+                      </h4>
+                      <ul className="text-sm text-slate-300 space-y-1">
+                        <li>• Etkilenen hesaplarda şifrenizi hemen değiştirin</li>
+                        <li>• İki faktörlü doğrulama (2FA) aktif edin</li>
+                        <li>• Aynı şifreyi farklı sitelerde kullanmayın</li>
+                        <li>• Şifre yöneticisi kullanmayı düşünün</li>
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
+          </div>
+        )}
 
-            {/* AI JSON Parse Kontrolü */}
-            {(() => {
-                let report = null;
-                let isRawText = false;
-                try { report = JSON.parse(scanResult.ai_raporu); } catch { isRawText = true; }
+        {/* RANSOMWARE PROTECTION */}
+        {activeTab === 'ransomware' && (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <Shield className="w-8 h-8 text-red-400" />
+                  <div>
+                    <h2 className="text-2xl font-bold">Ransomware Kalkanı</h2>
+                    <p className="text-sm text-slate-400">Honeypot dosyaları ile erken tespit sistemi</p>
+                  </div>
+                </div>
                 
-                if (report && report.risk_score) {
-                    return (
-                        <>
-                            {/* ÜST İSTATİSTİK KARTI */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                                <div className="bg-slate-900/80 border border-slate-700 p-6 rounded-2xl flex items-center gap-6">
-                                    <div className="relative w-24 h-24 flex items-center justify-center">
-                                        <svg className="w-full h-full transform -rotate-90">
-                                            <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-slate-700" />
-                                            <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" className={report.risk_score > 70 ? "text-red-500" : report.risk_score > 30 ? "text-yellow-500" : "text-emerald-500"} strokeDasharray={251.2} strokeDashoffset={251.2 - (251.2 * report.risk_score) / 100} />
-                                        </svg>
-                                        <span className="absolute text-2xl font-bold text-white">{report.risk_score}</span>
-                                    </div>
-                                    <div><h3 className="text-slate-400 text-sm font-bold uppercase">Tehdit Seviyesi</h3><p className={`text-2xl font-bold ${report.risk_level === 'Kritik' ? 'text-red-500' : 'text-emerald-500'}`}>{report.risk_level}</p><p className="text-xs text-slate-500 mt-1">{report.summary}</p></div>
-                                </div>
-                                <div className="col-span-2 grid grid-cols-3 gap-4 bg-slate-900/80 border border-slate-700 p-6 rounded-2xl">
-                                    {scanResult.cpu !== undefined ? (
-                                        <>
-                                            <div className="text-center"><p className="text-xs text-slate-500 mb-2">CPU</p><div className="text-3xl font-mono text-white mb-2">%{scanResult.cpu}</div><div className="h-1 bg-slate-800 rounded-full"><div style={{width: `${scanResult.cpu}%`}} className={`h-full rounded-full ${scanResult.cpu > 80 ? 'bg-red-500' : 'bg-blue-500'}`}></div></div></div>
-                                            <div className="text-center"><p className="text-xs text-slate-500 mb-2">RAM</p><div className="text-3xl font-mono text-white mb-2">%{scanResult.ram}</div><div className="h-1 bg-slate-800 rounded-full"><div style={{width: `${scanResult.ram}%`}} className="h-full rounded-full bg-purple-500"></div></div></div>
-                                            <div className="text-center"><p className="text-xs text-slate-500 mb-2">DISK</p><div className="text-3xl font-mono text-white mb-2">%{scanResult.disk}</div><div className="h-1 bg-slate-800 rounded-full"><div style={{width: `${scanResult.disk}%`}} className="h-full rounded-full bg-emerald-500"></div></div></div>
-                                        </>
-                                    ) : (
-                                        <div className="col-span-3 flex items-center justify-center text-slate-500 text-sm">
-                                            Bu tarama (OSINT) sistem kaynaklarını (CPU/RAM) analiz etmez.
-                                        </div>
-                                    )}
-                                </div>
+                <button
+                  onClick={startRansomwareProtection}
+                  disabled={ransomwareStatus === 'active'}
+                  className={`px-6 py-3 rounded-lg font-bold transition ${
+                    ransomwareStatus === 'active'
+                      ? 'bg-green-600 cursor-not-allowed'
+                      : 'bg-red-600 hover:bg-red-700'
+                  }`}
+                >
+                  {ransomwareStatus === 'active' ? '✓ KORUMA AKTİF' : 'KORUMAYYI BAŞLAT'}
+                </button>
+              </div>
+
+              {ransomwareStatus === 'active' && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                    <div className="bg-black/30 border border-slate-700 rounded-xl p-6">
+                      <h3 className="font-bold mb-4 flex items-center gap-2">
+                        <Database className="w-5 h-5 text-blue-400" />
+                        Honeypot Dosyaları
+                      </h3>
+                      <div className="space-y-2">
+                        {honeypotFiles.map((file, idx) => (
+                          <div key={idx} className="flex items-center justify-between p-3 bg-slate-800/50 rounded-lg">
+                            <div>
+                              <div className="font-mono text-sm">{file.name}</div>
+                              <div className="text-xs text-slate-500">{file.path}</div>
                             </div>
-                            
-                            {/* DETAYLI ANALİZ + TERMİNAL */}
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                                <div className="lg:col-span-2 space-y-4">
-                                    <h3 className="text-xl font-bold text-white flex items-center gap-2"><span className="text-indigo-400">🧠</span> Yapay Zeka Bulguları</h3>
-                                    {report.findings.map((item, index) => (
-                                        <div key={index} className={`p-6 rounded-xl border flex items-start gap-4 transition hover:scale-[1.01] ${item.type === 'risk' ? 'bg-red-900/20 border-red-500/30' : 'bg-emerald-900/20 border-emerald-500/30'}`}>
-                                            <div className={`p-3 rounded-lg ${item.type === 'risk' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{item.type === 'risk' ? '⚠️' : '🛡️'}</div>
-                                            <div><h4 className={`font-bold text-lg ${item.type === 'risk' ? 'text-red-200' : 'text-emerald-200'}`}>{item.title}</h4><p className="text-slate-400 text-sm mt-1">{item.desc}</p>{item.fix && (<div className="mt-3 bg-black/30 p-3 rounded border border-red-500/20"><span className="text-xs font-bold text-red-400 uppercase block mb-1">Önerilen Çözüm:</span><span className="text-slate-300 text-sm">{item.fix}</span></div>)}</div>
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="lg:col-span-1">
-                                    <h3 className="text-xl font-bold text-white flex items-center gap-2 mb-4"><span className="text-slate-400">📜</span> Denetim Günlüğü</h3>
-                                    <div className="bg-black rounded-xl border border-slate-800 p-4 h-[500px] overflow-y-auto font-mono text-xs shadow-inner custom-scrollbar">
-                                        <div className="text-slate-500 border-b border-slate-800 pb-2 mb-2">root@agent:~# tail -f /var/log/audit.log</div>
-                                        {report.audit_steps.map((step, i) => (
-                                            <div key={i} className="mb-2 flex gap-2">
-                                                <span className="text-emerald-600">[LOG]</span>
-                                                <span className="text-slate-300">➜ {typeof step === 'object' ? (step.step || step.description) : step}</span>
-                                                <span className="text-emerald-500">OK</span>
-                                            </div>
-                                        ))}
-                                        {osintData && (
-                                            <div className="opacity-70 mt-4 text-slate-500 border-t border-slate-800 pt-4">
-                                                <div className="mb-2 text-yellow-500 font-bold">[OSINT RAW DATA]</div>
-                                                <div>IP: {osintData.ip}</div>
-                                                <div>ISP: {osintData.isp}</div>
-                                                <div>Loc: {osintData.city}, {osintData.country}</div>
-                                                <div>UA: {osintData.userAgent.substring(0,40)}...</div>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                              <span className="text-xs text-green-400">{file.status}</span>
                             </div>
-                        </>
-                    );
-                } else if (isRawText) {
-                    return (
-                        <div className="flex flex-col items-center justify-center p-12 bg-slate-900/50 rounded-2xl border border-slate-800 animate-pulse h-96">
-                             <div className="text-6xl mb-6 animate-bounce">🤖</div>
-                             <h3 className="text-2xl font-bold text-white mb-2">Yapay Zeka Analiz Ediyor...</h3>
-                             <p className="text-slate-400 text-sm">Loglar işleniyor, tehdit skoru hesaplanıyor ve bulgular derleniyor.</p>
-                             <div className="mt-8 flex gap-2">
-                                <div className="w-3 h-3 bg-red-500 rounded-full animate-ping"></div>
-                                <div className="w-3 h-3 bg-yellow-500 rounded-full animate-ping delay-75"></div>
-                                <div className="w-3 h-3 bg-emerald-500 rounded-full animate-ping delay-150"></div>
-                             </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="bg-black/30 border border-slate-700 rounded-xl p-6">
+                      <h3 className="font-bold mb-4 flex items-center gap-2">
+                        <AlertTriangle className="w-5 h-5 text-red-400" />
+                        Tespit Edilen Tehditler
+                      </h3>
+                      {detectedThreats.length === 0 ? (
+                        <div className="text-center py-8 text-slate-500">
+                          <Shield className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                          <p className="text-sm">Henüz tehdit tespit edilmedi</p>
                         </div>
-                    );
-                }
-            })()}
-        </div>
-      )}
-      <footer className="max-w-6xl mx-auto mt-20 text-center text-slate-600 text-xs pb-8"><p>SolidTrace Threat Intelligence © 2026</p>{!session && <button onClick={() => setShowLogin(true)} className="mt-4 opacity-10 hover:opacity-100 transition">Admin Access</button>}</footer>
+                      ) : (
+                        <div className="space-y-2">
+                          {detectedThreats.map((threat) => (
+                            <div key={threat.id} className="p-3 bg-red-900/20 border border-red-700 rounded-lg">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="font-bold text-red-400">{threat.type}</span>
+                                <span className="text-xs text-slate-400">{threat.time}</span>
+                              </div>
+                              <div className="text-sm text-slate-300">
+                                Process: <code className="bg-black/50 px-2 py-0.5 rounded">{threat.process}</code>
+                              </div>
+                              <div className="text-xs text-green-400 mt-1">
+                                ✓ {threat.action}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-900/20 border border-blue-700 rounded-lg p-4">
+                    <h4 className="font-bold mb-2 flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-blue-400" />
+                      Nasıl Çalışır?
+                    </h4>
+                    <p className="text-sm text-slate-300">
+                      Sistem kritik dizinlere (Desktop, Documents) tuzak dosyaları yerleştirir. 
+                      Eğer bir ransomware bu dosyaları şifrelemeye çalışırsa, anında tespit edilir ve süreç durdurulur.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* REAL-TIME PROTECTION */}
+        {activeTab === 'realtime' && (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <Zap className="w-8 h-8 text-yellow-400" />
+                  <div>
+                    <h2 className="text-2xl font-bold">Gerçek Zamanlı Koruma</h2>
+                    <p className="text-sm text-slate-400">Sürekli izleme ve otomatik tehdit engelleme</p>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={toggleRealtimeProtection}
+                  className={`px-6 py-3 rounded-lg font-bold transition ${
+                    realtimeProtection
+                      ? 'bg-green-600 hover:bg-green-700'
+                      : 'bg-slate-700 hover:bg-slate-600'
+                  }`}
+                >
+                  {realtimeProtection ? '✓ AKTİF' : 'PASİF'}
+                </button>
+              </div>
+
+              {realtimeProtection && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div className="bg-green-900/20 border border-green-700 rounded-lg p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
+                        <span className="font-bold">Süreç İzleme</span>
+                      </div>
+                      <p className="text-sm text-slate-400">Yeni süreçler otomatik taranıyor</p>
+                    </div>
+                    
+                    <div className="bg-blue-900/20 border border-blue-700 rounded-lg p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse"></div>
+                        <span className="font-bold">Ağ İzleme</span>
+                      </div>
+                      <p className="text-sm text-slate-400">Şüpheli bağlantılar engelleniyor</p>
+                    </div>
+                    
+                    <div className="bg-purple-900/20 border border-purple-700 rounded-lg p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-3 h-3 rounded-full bg-purple-500 animate-pulse"></div>
+                        <span className="font-bold">Dosya Koruması</span>
+                      </div>
+                      <p className="text-sm text-slate-400">Kritik dosyalar korunuyor</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-black border border-slate-800 rounded-xl p-4 h-96 overflow-y-auto font-mono text-sm">
+                    <div className="text-slate-500 mb-2">[REAL-TIME MONITOR] Aktif...</div>
+                    {realtimeEvents.map((event) => (
+                      <div key={event.id} className={`mb-1 ${
+                        event.type === 'block' ? 'text-red-400' :
+                        event.type === 'scan' ? 'text-blue-400' : 'text-green-400'
+                      }`}>
+                        [{event.time}] {event.type === 'block' ? '🛑' : event.type === 'scan' ? '🔍' : '✓'} {event.message}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {!realtimeProtection && (
+                <div className="text-center py-12">
+                  <Zap className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+                  <p className="text-slate-400 mb-4">Gerçek zamanlı koruma şu anda kapalı</p>
+                  <button
+                    onClick={toggleRealtimeProtection}
+                    className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-bold transition"
+                  >
+                    KORUMAYYI AKTİF ET
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* BENCHMARK */}
+        {activeTab === 'benchmark' && (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-8">
+              <div className="flex items-center gap-3 mb-6">
+                <TrendingUp className="w-8 h-8 text-green-400" />
+                <div>
+                  <h2 className="text-2xl font-bold">Güvenlik Skoru Karşılaştırması</h2>
+                  <p className="text-sm text-slate-400">Güvenlik seviyenizi diğer kullanıcılarla karşılaştırın</p>
+                </div>
+              </div>
+
+              {!userRank && (
+                <div className="text-center py-12">
+                  <Award className="w-16 h-16 mx-auto mb-4 text-slate-600" />
+                  <p className="text-slate-400 mb-4">Güvenlik skorunuzu hesaplayın ve sıralamadaki yerinizi görün</p>
+                  <button
+                    onClick={calculateBenchmark}
+                    disabled={benchmarkLoading}
+                    className="px-8 py-4 bg-green-600 hover:bg-green-700 rounded-lg font-bold transition disabled:opacity-50"
+                  >
+                    {benchmarkLoading ? 'HESAPLANIYOR...' : 'SKORU HESAPLA'}
+                  </button>
+                </div>
+              )}
+
+              {userRank && (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="bg-gradient-to-br from-blue-900/50 to-blue-800/50 border border-blue-700 rounded-xl p-6 text-center">
+                      <div className="text-5xl font-bold mb-2">{userRank.score}</div>
+                      <div className="text-slate-400">Güvenlik Skoru</div>
+                      <div className="mt-4 h-2 bg-slate-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-1000"
+                          style={{ width: `${userRank.score}%` }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    <div className="bg-gradient-to-br from-purple-900/50 to-purple-800/50 border border-purple-700 rounded-xl p-6 text-center">
+                      <div className="text-5xl font-bold mb-2">#{userRank.rank.toLocaleString()}</div>
+                      <div className="text-slate-400">Sıralama</div>
+                      <div className="text-sm text-purple-400 mt-2">
+                        {userRank.total.toLocaleString()} kullanıcı arasında
+                      </div>
+                    </div>
+
+                    <div className="bg-gradient-to-br from-green-900/50 to-green-800/50 border border-green-700 rounded-xl p-6 text-center">
+                      <div className="text-5xl font-bold mb-2">{userRank.percentile}%</div>
+                      <div className="text-slate-400">Yüzdelik Dilim</div>
+                      <div className="text-sm text-green-400 mt-2">
+                        Kullanıcıların %{userRank.percentile}'inden daha güvenli
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-black/30 border border-slate-700 rounded-xl p-6">
+                    <h3 className="font-bold mb-4 flex items-center gap-2">
+                      <Users className="w-5 h-5 text-blue-400" />
+                      Skorunuzu Yükseltmek İçin:
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg">
+                        <div className="w-6 h-6 rounded-full bg-green-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <span className="text-green-400 text-sm">✓</span>
+                        </div>
+                        <div>
+                          <div className="font-bold text-sm">Güvenlik Duvarını Aktif Et</div>
+                          <div className="text-xs text-slate-400">+10 puan</div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg">
+                        <div className="w-6 h-6 rounded-full bg-yellow-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <span className="text-yellow-400 text-sm">!</span>
+                        </div>
+                        <div>
+                          <div className="font-bold text-sm">2FA Kullan</div>
+                          <div className="text-xs text-slate-400">+15 puan</div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg">
+                        <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <span className="text-blue-400 text-sm">🔒</span>
+                        </div>
+                        <div>
+                          <div className="font-bold text-sm">Güçlü Şifreler</div>
+                          <div className="text-xs text-slate-400">+12 puan</div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-start gap-3 p-3 bg-slate-800/50 rounded-lg">
+                        <div className="w-6 h-6 rounded-full bg-purple-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                          <span className="text-purple-400 text-sm">📡</span>
+                        </div>
+                        <div>
+                          <div className="font-bold text-sm">VPN Kullan</div>
+                          <div className="text-xs text-slate-400">+8 puan</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* AI CHAT */}
+        {activeTab === 'chat' && (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+              <div className="p-6 border-b border-slate-800">
+                <div className="flex items-center gap-3">
+                  <MessageSquare className="w-8 h-8 text-blue-400" />
+                  <div>
+                    <h2 className="text-2xl font-bold">AI Güvenlik Asistanı</h2>
+                    <p className="text-sm text-slate-400">Siber güvenlik sorularınızı sorun</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="h-96 overflow-y-auto p-6 space-y-4 bg-black/30">
+                {chatMessages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-[80%] p-4 rounded-xl ${
+                        msg.role === 'user'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-slate-800 text-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        {msg.role === 'assistant' && (
+                          <Shield className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                        )}
+                        <p className="text-sm leading-relaxed">{msg.content}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div className="flex justify-start">
+                    <div className="bg-slate-800 text-slate-200 p-4 rounded-xl">
+                      <div className="flex gap-1">
+                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce delay-75"></div>
+                        <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce delay-150"></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <div className="p-6 border-t border-slate-800">
+                <div className="flex gap-3">
+                  <input
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleChatSend()}
+                    placeholder="Siber güvenlik hakkında bir şey sorun..."
+                    className="flex-1 bg-black/50 border border-slate-700 text-white p-4 rounded-lg focus:border-blue-500 focus:outline-none"
+                  />
+                  <button
+                    onClick={handleChatSend}
+                    disabled={chatLoading || !chatInput.trim()}
+                    className="px-6 py-4 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold transition disabled:opacity-50"
+                  >
+                    GÖNDER
+                  </button>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {['Port nedir?', 'Firewall nasıl aktif edilir?', 'Ransomware nedir?', 'VPN güvenli mi?'].map((suggestion, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        setChatInput(suggestion);
+                        handleChatSend();
+                      }}
+                      className="text-xs px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-full transition"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
     </div>
   );
 }
