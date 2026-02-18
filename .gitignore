@@ -1,0 +1,119 @@
+# ========================
+# 🔒 GÜVENLİK (EN KRİTİK)
+# ========================
+# Hangi klasörde olursa olsun .env dosyalarını yoksay
+**/.env
+**/.env.local
+**/.env.development.local
+**/.env.test.local
+**/.env.production.local
+
+# Sertifikalar ve Anahtarlar (ASLA GİTMEMELİ)
+*.pem
+*.key
+*.cert
+*.pfx
+*.p12
+
+# ========================
+# 🦀 RUST (Agent)
+# ========================
+# Derleme çıktıları (Çok yer kaplar)
+agent_rust/target/
+
+# Hata ayıklama sembolleri
+**/*.pdb
+
+# YEDEK DOSYALAR
+**/*.rs.bk
+
+# NOT: Cargo.lock dosyasını bilerek buraya eklemiyoruz.
+# Bir "Uygulama" (Binary) geliştirdiğimiz için versiyonları kitlemek önemlidir.
+
+# ========================
+# 🐍 PYTHON (Backend)
+# ========================
+# Bytecode ve Önbellek
+backend/__pycache__/
+backend/*.py[cod]
+backend/*$py.class
+
+# Sanal Ortamlar (İsim ne olursa olsun)
+backend/venv/
+backend/.venv/
+backend/env/
+
+# Test ve Coverage Raporları
+backend/.pytest_cache/
+backend/.coverage
+backend/htmlcov/
+
+# Paketleme artıkları
+backend/*.egg-info/
+
+# ========================
+# ⚛️ NODE.JS / NEXT.JS (Frontend)
+# ========================
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+
+# Vercel Dağıtım Dosyaları
+frontend/.vercel/
+
+# TypeScript Build Bilgisi
+frontend/*.tsbuildinfo
+
+# Debug Logları
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/pnpm-debug.log*
+
+# ========================
+# ⚙️ GENEL / IDE DOSYALARI
+# ========================
+# İşletim Sistemi Çöpleri
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# IDE Ayarları (Kişisel ayarlar gitmemeli)
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Derlenmiş Binary Dosyalar (Kaynak kodda olmamalı)
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Loglar
+*.log
+
+# ========================
+# 🗄️ VERİTABANI (Local DB)
+# ========================
+*.db
+*.sqlite3
+backend/solidtrace.db
+backend/data/
+
+# --- KRİTİK ENGELLEMELER ---
+node_modules/
+**/node_modules/
+frontend/node_modules/
+backend/venv/
+backend/.venv/
+*.db
+*.sqlite3
+target/
+.env
+
+# Güvenlik eklemeleri
+backend/*.txt
+*.env.*

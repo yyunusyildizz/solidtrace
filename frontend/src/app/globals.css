@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* 🎨 ELITE THEME VARIABLES */
+:root {
+  --background: #020202; /* Saf Siyah yerine derin kömür siyahı */
+  --foreground: #ededed;
+  
+  /* Cyberpunk Renk Paleti */
+  --accent-red: #dc2626;
+  --accent-orange: #f59e0b;
+  --accent-indigo: #6366f1;
+  --glass-bg: rgba(15, 23, 42, 0.4);
+  --glass-border: rgba(255, 255, 255, 0.05);
+}
+
+/* 🚀 GLOBAL SCROLLBAR REMOVAL */
+/* Tüm tarayıcılarda kaydırma çubuklarını gizler ama kaydırma işlevini bozmaz */
+@layer base {
+  html, body {
+    scrollbar-width: none !important; /* Firefox */
+    -ms-overflow-style: none !important; /* IE/Edge */
+  }
+
+  ::-webkit-scrollbar {
+    display: none !important; /* Chrome/Safari/Brave */
+  }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    /* Dashboard için en iyi font her zaman Mono'dur */
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    overflow-x: hidden;
+  }
+}
+
+/* ✨ GLASSMORPHISM UTILITY */
+/* Bunu tüm projedeki div'lerde 'glass-effect' class'ı ile kullanabilirsin */
+@layer utilities {
+  .glass-effect {
+    background: var(--glass-bg);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+  }
+
+  /* 🔴 NEON GLOWS */
+  .neon-red {
+    box-shadow: 0 0 15px rgba(220, 38, 38, 0.2);
+    border: 1px solid rgba(220, 38, 38, 0.3);
+  }
+
+  .neon-indigo {
+    box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+  }
+}
