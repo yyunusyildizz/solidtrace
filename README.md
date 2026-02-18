@@ -1,37 +1,70 @@
-# 🛡️ SolidTrace EDR (Endpoint Detection & Response)
+# 🛡️ SolidTrace: Advanced EDR & Heuristic Defense System
 
 ![Status](https://img.shields.io/badge/Status-Beta_v6.2-blue)
 ![Security](https://img.shields.io/badge/Security-Rust_Powered-orange)
 ![Dashboard](https://img.shields.io/badge/Dashboard-Next.js-black)
 
-**SolidTrace**, modern tehditlere karşı geliştirilmiş, hafif, hızlı ve yapay zeka destekli bir EDR (Uç Nokta Tehdit Algılama ve Yanıt) çözümüdür. Rust tabanlı ajanı ile sistem kaynaklarını tüketmeden izleme yapar, Python/FastAPI backend'i ile verileri işler ve React tabanlı modern arayüzü ile operatöre sunar.
+**SolidTrace**, modern siber tehditlere karşı uç noktaları (endpoint) korumak amacıyla geliştirilmiş, düşük kaynak tüketimli ve yüksek görünürlüklü bir **EDR (Endpoint Detection & Response)** çözümüdür. 
 
-## 🚀 Özellikler
+Geleneksel imza tabanlı sistemlerin ötesine geçerek; süreç doğrulama (Path Verification), davranışsal analiz (Heuristics) ve dosya bütünlük denetimi (FIM) yeteneklerini tek bir çatıda birleştirir.
 
--   **👁️ Gerçek Zamanlı Süreç İzleme (Process Monitor):** Bellekte çalışan her süreci analiz eder, *Masquerading* (svchost taklidi yapan virüsler) saldırılarını yakalar.
--   **📁 FIM (File Integrity Monitoring):** Kritik sistem dosyalarını (hosts vb.) ve kullanıcı alanlarını (Desktop, Downloads) anlık izler.
--   **🔥 Ransomware Koruması (Heuristic):** Saniyede belirli sayıda dosya değişimi olursa (şifreleme saldırısı) işlemi tespit eder ve alarm verir.
--   **🔌 USB & Donanım Takibi:** Sisteme takılan USB cihazları anında raporlar.
--   **🧬 YARA Tarama Motoru:** Dosyaları imza tabanlı (YARA kuralları) tarayarak bilinen tehditleri engeller.
--   **🧠 Yapay Zeka Destekli Analiz:** Logları analiz ederek operatöre risk skoru sunar.
--   **🔐 Güvenli İletişim:** Ajan ve Sunucu arasında Token tabanlı ve Key korumalı iletişim.
 
-## 🏗️ Mimari
 
-Proje 3 ana bileşenden oluşur:
+---
 
-1.  **Agent (Rust):** Uç noktada çalışan, veriyi toplayan ve emirleri uygulayan motor.
-2.  **Core (Python/FastAPI):** Veritabanı, API yönetimi ve AI analiz merkezi.
-3.  **SOC Dashboard (Next.js/React):** Güvenlik analistleri için canlı izleme ekranı.
+## 🏗️ Mimari ve Mühendislik Kararları
 
-## 🛠️ Kurulum
+Proje, performans ve güvenliği optimize etmek için üç ana katmanda kurgulanmıştır:
 
-### Gereksinimler
--   Rust (Cargo)
--   Python 3.9+
--   Node.js & npm
+### 1. 🦀 Sentinel Agent (Rust)
+Ajan tarafında Rust seçimi, bellek güvenliği ve "Zero-cost Abstractions" ilkesine dayanır.
+- **Asenkron Event Loop:** `tokio` kütüphanesi ile log toplama, tarama ve ağ iletişimi birbirini bloklamadan yürütülür.
+- **Düşük Kaynak Tüketimi:** Geleneksel güvenlik yazılımlarının aksine, sistem kaynaklarını (CPU/RAM) minimize ederek arka planda görünmez bir koruma sağlar.
+- **Kernel-Level Notification:** `notify` kütüphanesi kullanılarak dosya sistemi değişiklikleri "polling" yerine işletim sistemi olayları seviyesinde dinlenir.
 
-### 1. Backend (Sunucu) Kurulumu
+### 2. 🧠 Core Engine (Python / FastAPI)
+- **Real-time Pipeline:** WebSocket protokolü üzerinden ajanlardan gelen ham verileri milisaniyeler içinde işler.
+- **Rule Engine & Scoring:** Gelen her olay, SQL ve YARA tabanlı kural motorundan geçirilerek dinamik bir risk skoru (0-100) atanır.
+
+### 3. 🎮 Command Center (Next.js & TypeScript)
+- **SOC Optimized UI:** Analistlerin "Log Yorgunluğu" (Alert Fatigue) yaşamaması için gelişmiş gürültü filtreleme algoritmaları içerir.
+- **Client-Side Data Slicing:** Arama ve filtreleme işlemleri tarayıcı tarafında yapılarak devasa log yığınları içinde anlık arama imkanı sunar.
+
+---
+
+## 🔥 Öne Çıkan Güvenlik Yetenekleri
+
+### 👁️ Akıllı Süreç Doğrulama (Anti-Masquerading)
+SolidTrace, sadece süreç ismine bakarak karar vermez. Malware yazarlarının en çok kullandığı `svchost.exe`, `explorer.exe` gibi sistem dosyası taklitlerini yakalar.
+- **Mantık:** Eğer süreç ismi kritik bir sistem dosyası ise, bu dosyanın **yasal dizini** (örneğin `C:\Windows\System32`) kontrol edilir. Dizini tutarsız olan tüm süreçler **CRITICAL** olarak raporlanır.
+
+### 📁 Davranışsal Ransomware Tespiti (Heuristics)
+İmza tabanlı korumanın yetersiz kaldığı 0-day (sıfırıncı gün) saldırılarına karşı hız odaklı bir savunma yapar.
+- **Mantık:** Kullanıcı klasörlerindeki (Masaüstü, Belgeler) dosya değişim frekansını ölçer. 
+- **Tespit:** 2 saniye içinde 20'den fazla "Modify" işlemi tespit edildiğinde sistem otomatik olarak fidye yazılımı alarmı üretir.
+
+### 🧬 Hibrit Tarama Motoru
+- **Signature Based:** YARA kuralları ile bilinen zararlı yazılım imzalarını yakalar.
+- **Integrity Monitor (FIM):** Kritik sistem dosyalarının (hosts, drivers vb.) yetkisiz değiştirilmesini anlık izler.
+
+
+
+---
+
+## 🛠️ Teknoloji Yığını
+
+| Katman | Teknoloji | Amaç |
+| :--- | :--- | :--- |
+| **Agent** | Rust, Tokio, Sysinfo, Notify | Performance & System Level Monitoring |
+| **Backend** | Python, FastAPI, SQLite | Data Orchestration & WebSockets |
+| **Frontend** | Next.js, TailwindCSS, Lucide | SOC Visualization & Real-time Dash |
+| **Analysis** | YARA Engine, AI Heuristics | Threat Intelligence |
+
+---
+
+## 🚀 Kurulum
+
+### 1. Backend (The Brain)
 ```bash
 cd backend
 pip install -r requirements.txt
