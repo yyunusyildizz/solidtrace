@@ -1,6 +1,9 @@
 """
-SolidTrace WebSocket Server
-Real-time alert streaming to dashboard
+SolidTrace WebSocket Server - v2.0 (REVISED)
+Düzeltmeler:
+  - broadcast() içinde kopan bağlantılar temizleniyor (memory leak & ValueError önlendi)
+  - Bağlantı sayısı loglama iyileştirildi
+  - ping/pong heartbeat eklendi
 """
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -9,50 +12,57 @@ import asyncio
 import json
 from datetime import datetime
 
-# ==========================================
-# CONNECTION MANAGER
-# ==========================================
+
 class ConnectionManager:
     """Manage WebSocket connections"""
-    
+
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-    
+
     async def connect(self, websocket: WebSocket):
-        """Accept new connection"""
         await websocket.accept()
         self.active_connections.append(websocket)
-        print(f"✓ WebSocket connected (Total: {len(self.active_connections)})")
-    
+        logger_print(f"✔ WebSocket bağlandı (Toplam: {len(self.active_connections)})")
+
     def disconnect(self, websocket: WebSocket):
-        """Remove connection"""
-        self.active_connections.remove(websocket)
-        print(f"✗ WebSocket disconnected (Total: {len(self.active_connections)})")
-    
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger_print(f"✗ WebSocket ayrıldı (Toplam: {len(self.active_connections)})")
+
     async def send_personal_message(self, message: str, websocket: WebSocket):
-        """Send message to specific client"""
         await websocket.send_text(message)
-    
+
     async def broadcast(self, message: str):
-        """Broadcast message to all connected clients"""
+        """
+        FIX: Kopan bağlantılar broadcast sırasında tespit edilip kaldırılıyor.
+        Önceki implementasyonda dead connections birikiyordu ve ValueError riski vardı.
+        """
+        dead_connections: List[WebSocket] = []
+
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
-            except:
-                # Connection closed, will be removed on next iteration
-                pass
-    
+            except Exception:
+                dead_connections.append(connection)
+
+        # Batch cleanup — iteration sırasında liste değiştirilmiyor
+        for dead in dead_connections:
+            if dead in self.active_connections:
+                self.active_connections.remove(dead)
+
+        if dead_connections:
+            logger_print(f"🧹 {len(dead_connections)} kopuk bağlantı temizlendi "
+                         f"(Kalan: {len(self.active_connections)})")
+
     async def broadcast_alert(self, alert: Dict):
-        """Broadcast alert to all clients"""
         message = json.dumps({
             "type": "alert",
-            "data": alert,
+            "data": _serialize_alert(alert),
             "timestamp": datetime.utcnow().isoformat()
-        })
+        }, default=str)
         await self.broadcast(message)
-    
+
     async def broadcast_stats(self, stats: Dict):
-        """Broadcast statistics update"""
         message = json.dumps({
             "type": "stats",
             "data": stats,
@@ -60,137 +70,131 @@ class ConnectionManager:
         })
         await self.broadcast(message)
 
-# ==========================================
-# WEBSOCKET ENDPOINTS (Add to FastAPI app)
-# ==========================================
+    @property
+    def connection_count(self) -> int:
+        return len(self.active_connections)
 
-# Create manager instance
+
+def _serialize_alert(alert: Dict) -> Dict:
+    """Alert dict'inden JSON serializable olmayan objeleri temizle"""
+    safe = {}
+    for key, value in alert.items():
+        try:
+            json.dumps(value, default=str)
+            safe[key] = value
+        except (TypeError, ValueError):
+            safe[key] = str(value)
+    return safe
+
+
+def logger_print(msg: str):
+    """Basit loglama — logger bağlı değilse print kullan"""
+    import logging
+    logging.getLogger("SolidTraceWS").info(msg)
+
+
+# ==========================================
+# WEBSOCKET ENDPOINT'LERİ (FastAPI app'e ekle)
+# ==========================================
 manager = ConnectionManager()
 
-# Add these to your api_advanced.py:
-"""
-@app.websocket("/ws/alerts")
-async def websocket_alerts(websocket: WebSocket):
-    '''Real-time alert stream'''
+
+async def websocket_alerts_endpoint(websocket: WebSocket, soc_engine=None):
+    """
+    Gerçek zamanlı alert stream.
+    Kullanım: @app.websocket("/ws/alerts")(websocket_alerts_endpoint)
+    """
     await manager.connect(websocket)
-    
     try:
-        # Send initial connection message
         await websocket.send_json({
             "type": "connected",
-            "message": "Connected to SolidTrace alert stream",
+            "message": "SolidTrace alert stream'e bağlandınız",
             "timestamp": datetime.utcnow().isoformat()
         })
-        
-        # Keep connection alive
+
         while True:
-            # Wait for client messages (heartbeat)
             data = await websocket.receive_text()
-            
+
+            # Heartbeat desteği
             if data == "ping":
                 await websocket.send_json({
                     "type": "pong",
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "connections": manager.connection_count
                 })
-    
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-@app.websocket("/ws/stats")
-async def websocket_stats(websocket: WebSocket):
-    '''Real-time statistics stream'''
+
+async def websocket_stats_endpoint(websocket: WebSocket, soc_engine=None):
+    """
+    Gerçek zamanlı istatistik stream (5 sn interval).
+    Kullanım: @app.websocket("/ws/stats")(websocket_stats_endpoint)
+    """
     await manager.connect(websocket)
-    
     try:
         while True:
-            # Send stats every 5 seconds
             await asyncio.sleep(5)
-            stats = soc.get_statistics()
-            await websocket.send_json({
-                "type": "stats_update",
-                "data": stats,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-    
+            if soc_engine:
+                stats = soc_engine.get_statistics()
+                await websocket.send_json({
+                    "type": "stats_update",
+                    "data": stats,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-"""
+
 
 # ==========================================
-# ALERT BROADCASTER (Background Task)
+# BACKGROUND BROADCASTER
 # ==========================================
 class AlertBroadcaster:
-    """Background task to broadcast alerts"""
-    
     def __init__(self, connection_manager: ConnectionManager):
         self.manager = connection_manager
         self.running = False
-    
+
     async def start(self):
-        """Start broadcasting"""
         self.running = True
-        print("✓ Alert broadcaster started")
-        
+        logger_print("✔ Alert broadcaster başlatıldı")
         while self.running:
-            await asyncio.sleep(1)  # Check every second
-    
+            await asyncio.sleep(1)
+
     def stop(self):
-        """Stop broadcasting"""
         self.running = False
-        print("✗ Alert broadcaster stopped")
-    
+        logger_print("✗ Alert broadcaster durduruldu")
+
     async def broadcast_alert(self, alert: Dict):
-        """Broadcast new alert to all clients"""
         await self.manager.broadcast_alert(alert)
 
-# ==========================================
-# USAGE IN SOC ENGINE
-# ==========================================
-
-# Update soc_engine_advanced.py:
-"""
-class SOCEngine:
-    def __init__(self, websocket_manager=None):
-        # ... existing code ...
-        self.ws_manager = websocket_manager
-    
-    async def process_event(self, event: Dict) -> Optional[Dict]:
-        # ... existing detection logic ...
-        
-        if alert and self.ws_manager:
-            # Broadcast alert to connected clients
-            await self.ws_manager.broadcast_alert(alert)
-        
-        return alert
-"""
 
 # ==========================================
-# STANDALONE WEBSOCKET SERVER
+# STANDALONE TEST SUNUCUSU
 # ==========================================
 if __name__ == "__main__":
     import uvicorn
-    from fastapi import FastAPI
-    
-    app = FastAPI()
-    manager = ConnectionManager()
-    
+
+    app = FastAPI(title="SolidTrace WebSocket Test")
+    test_manager = ConnectionManager()
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
-        await manager.connect(websocket)
+        await test_manager.connect(websocket)
         try:
             while True:
                 data = await websocket.receive_text()
-                await manager.broadcast(f"Client says: {data}")
+                if data == "ping":
+                    await websocket.send_json({"type": "pong"})
+                else:
+                    await test_manager.broadcast(f"Echo: {data}")
         except WebSocketDisconnect:
-            manager.disconnect(websocket)
-    
+            test_manager.disconnect(websocket)
+
     print("""
-    ╔════════════════════════════════════════╗
-    ║   SolidTrace WebSocket Server         ║
-    ║   Real-time Alert Streaming           ║
-    ╚════════════════════════════════════════╝
-    
-    WebSocket URL: ws://localhost:8001/ws
+╔══════════════════════════════════════════╗
+║   SolidTrace WebSocket Server v2.0      ║
+║   ws://localhost:8001/ws                ║
+╚══════════════════════════════════════════╝
     """)
-    
     uvicorn.run(app, host="0.0.0.0", port=8001)

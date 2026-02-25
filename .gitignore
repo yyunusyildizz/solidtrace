@@ -116,4 +116,5 @@ target/
 
 # Güvenlik eklemeleri
 backend/*.txt
+!backend/requirements.txt
 *.env.*

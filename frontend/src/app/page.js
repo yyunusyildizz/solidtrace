@@ -1,382 +1,487 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
-import Link from 'next/link';
+import { useState, useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
+import {
+  Shield, Download, Terminal, Activity, Check, AlertCircle,
+  Server, Lock, Zap, Monitor, HardDrive, Wifi, Clock, Package,
+  ArrowRight, Globe, Search, ChevronRight, Copy, RefreshCw
+} from "lucide-react";
 
-// --- AYARLAR ---
-const PYTHON_API_URL = "http://localhost:8000"; 
-const WS_URL = "ws://localhost:8000/ws/alerts"; 
+const API = "http://localhost:8000";
+const WS  = "ws://localhost:8000/ws/alerts";
+
+const fmtUptime = (s) => {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}sa ${m}dk` : `${m}dk`;
+};
+
+const STEPS = [
+  { n: "01", title: "İndir",    icon: <Download size={15}/>, code: null,
+    desc: "Aşağıdaki butona tıklayarak agent ZIP dosyasını indirin." },
+  { n: "02", title: "Çıkar",    icon: <Package size={15}/>,  code: null,
+    desc: "ZIP'i istediğiniz bir klasöre çıkarın (ör: C:\\solidtrace)." },
+  { n: "03", title: "Çalıştır", icon: <Terminal size={15}/>, code: `.\\solidtrace-agent.exe`,
+    desc: "Yönetici olarak PowerShell açın ve çalıştırın." },
+  { n: "04", title: "Doğrula",  icon: <Wifi size={15}/>,     code: null,
+    desc: "SOC panelinde Asset sekmesini açın — makineniz saniyeler içinde görünür." },
+];
+
+const FEATURES = [
+  { icon: <Activity size={13}/>,  label: "Process İzleme" },
+  { icon: <HardDrive size={13}/>, label: "Dosya Sistemi" },
+  { icon: <Monitor size={13}/>,   label: "Event Log" },
+  { icon: <Zap size={13}/>,       label: "USB Monitörü" },
+  { icon: <Globe size={13}/>,     label: "Ağ İzleme" },
+  { icon: <Lock size={13}/>,      label: "Registry" },
+  { icon: <Shield size={13}/>,    label: "Sigma Kuralları" },
+  { icon: <Server size={13}/>,    label: "Düşük Kaynak" },
+];
 
 export default function Home() {
-  // --- STATE ---
-  const [isAdmin, setIsAdmin] = useState(false); 
-  const [showLogin, setShowLogin] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  
-  const [loadingAuth, setLoadingAuth] = useState(false);
-  const [loadingOsint, setLoadingOsint] = useState(false);
-  const [loadingAgent, setLoadingAgent] = useState(false);
-  
-  const [scanResult, setScanResult] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [pairingCode, setPairingCode] = useState(null);
-  const [osintData, setOsintData] = useState(null);
-  const [statusMsg, setStatusMsg] = useState("Bağlantı bekleniyor...");
-
-  // 🔥 SOC Backend Durumu 🔥
-  const [socStatus, setSocStatus] = useState('offline'); 
-  const [socStats, setSocStats] = useState({ critical: 0, high: 0 });
+  const [socOnline,    setSocOnline]    = useState(false);
+  const [status,       setStatus]       = useState(null);
+  const [agentInfo,    setAgentInfo]    = useState(null);
+  const [osintLoading, setOsintLoading] = useState(false);
+  const [osintData,    setOsintData]    = useState(null);
+  const [osintError,   setOsintError]   = useState(null);
+  const [copied,       setCopied]       = useState(null);
+  const [activeStep,   setActiveStep]   = useState(0);
+  const [lastAlert,    setLastAlert]    = useState(null);
   const wsRef = useRef(null);
 
-  // --- 1. SİSTEM SAĞLIK KONTROLÜ ---
-  useEffect(() => {
-    const checkSocHealth = async () => {
-      try {
-        const res = await fetch(`${PYTHON_API_URL}/api/stats`);
-        if (res.ok) {
-          setSocStatus('online'); 
-          const data = await res.json();
-          setSocStats({ critical: data.critical_count || 0, high: data.total_logs || 0 });
-        } else {
-          setSocStatus('offline');
-        }
-      } catch (e) {
-        setSocStatus('offline');
+  const fetchStatus = useCallback(async () => {
+    try {
+      const [sRes, aRes] = await Promise.allSettled([
+        fetch(`${API}/api/system/status`),
+        fetch(`${API}/api/agent/info`),
+      ]);
+      if (sRes.status === "fulfilled" && sRes.value.ok) {
+        const d = await sRes.value.json();
+        setStatus(d); setSocOnline(d.backend);
+      } else {
+        try {
+          const r = await fetch(`${API}/api/stats`);
+          if (r.ok) {
+            const d = await r.json();
+            setSocOnline(true);
+            setStatus({ backend: true, db: true, agents_online: 0, total_alerts: d.total_logs || 0, uptime_seconds: 0 });
+          } else setSocOnline(false);
+        } catch { setSocOnline(false); }
       }
-    };
-
-    checkSocHealth();
-    const interval = setInterval(checkSocHealth, 3000);
-    return () => clearInterval(interval);
+      if (aRes.status === "fulfilled" && aRes.value.ok) {
+        setAgentInfo(await aRes.value.json());
+      } else {
+        setAgentInfo({
+          version: "1.0.0", build_date: "2026-02-22", size_mb: 4.2, sha256: "—",
+          changelog: [
+            "Rust tabanlı hafif agent", "Windows Event Log izleme",
+            "USB, dosya, process, registry monitörü",
+            "Gerçek zamanlı WebSocket raporlama",
+            "Sigma kural motoru", "Otomatik yeniden bağlanma",
+          ],
+        });
+      }
+    } catch { setSocOnline(false); }
   }, []);
 
-  // --- 2. WEBSOCKET DİNLEME ---
   useEffect(() => {
-    if (!pairingCode && !isAdmin) return; 
+    fetchStatus();
+    const t = setInterval(fetchStatus, 15000);
+    return () => clearInterval(t);
+  }, [fetchStatus]);
 
-    const ws = new WebSocket(WS_URL);
-    ws.onopen = () => setStatusMsg("Ajan bağlantısı bekleniyor...");
-    ws.onmessage = (event) => {
-        const message = JSON.parse(event.data);
-        if (message.type === 'alert' || message.type === 'ALERT') {
-            const alertData = message.payload || message.data;
-            setStatusMsg("⚡ Tehdit Algılandı! Analiz ediliyor...");
-            
-            setScanResult({
-                id: alertData.id,
-                created_at: alertData.created_at,
-                ip_adresi: alertData.hostname || 'Localhost',
-                durum: 'tamamlandi',
-                cpu: 45, ram: 60, disk: 30,
-                ai_raporu: JSON.stringify({
-                    risk_score: alertData.risk_score || 85,
-                    risk_level: alertData.severity || 'Yüksek',
-                    summary: `Tehdit Tespiti: ${alertData.rule}`,
-                    findings: [{ type: 'risk', title: alertData.rule, desc: alertData.details, fix: 'Sistemi izole edin.' }],
-                    audit_steps: ['Ajan Tespiti', 'Kural Eşleşmesi', 'Log Kaydı']
-                })
-            });
-            setLoadingAgent(false);
-            setPairingCode(null);
-            if(isAdmin) fetchHistory();
+  useEffect(() => {
+    if (!socOnline) return;
+    const ws = new WebSocket(WS);
+    wsRef.current = ws;
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "alert" || msg.type === "ALERT") {
+          const d = msg.data || msg.payload;
+          if (d) setLastAlert(d);
         }
+      } catch {}
     };
-    return () => ws.close();
-  }, [pairingCode, isAdmin]);
+    return () => { ws.close(); wsRef.current = null; };
+  }, [socOnline]);
 
-  // --- HELPER FUNCTIONS ---
-  const fetchHistory = async () => {
+  const runOsint = async () => {
+    setOsintLoading(true); setOsintData(null); setOsintError(null);
     try {
-      const res = await fetch(`${PYTHON_API_URL}/api/alerts`);
-      if (res.ok) {
-        const data = await res.json();
-        setHistory(data.map(item => ({
-            id: item.id, created_at: item.created_at, ip_adresi: item.hostname, durum: 'tamamlandi', cpu: item.risk_score > 50 ? 80 : 20, ram: 45
-        })));
-      }
-    } catch (err) { console.error("Geçmiş hatası:", err); }
-  };
+      let ip = "Bilinmiyor", isp = "—", city = "—", country = "—";
+      try {
+        const r = await fetch("https://ipapi.co/json/");
+        if (r.ok) {
+          const d = await r.json();
+          ip = d.ip; isp = d.org || "—"; city = d.city || "—"; country = d.country_name || "—";
+        }
+      } catch {}
 
-  const startLocalScan = async () => {
-    setLoadingAgent(true);
-    setPairingCode(Math.floor(1000 + Math.random() * 9000).toString());
-    setStatusMsg("Ajanın bağlanması bekleniyor...");
-  };
+      let webRTC_Leak = "HAYIR ✓";
+      try {
+        const rtcIPs = [];
+        await new Promise((resolve) => {
+          const rtc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+          rtc.createDataChannel("");
+          rtc.createOffer().then(o => rtc.setLocalDescription(o));
+          rtc.onicecandidate = (ice) => {
+            if (ice && ice.candidate && ice.candidate.candidate) {
+              const m = ice.candidate.candidate.match(/([0-9]{1,3}\.){3}[0-9]{1,3}/g);
+              if (m) rtcIPs.push(...m);
+            } else if (!ice.candidate) { rtc.close(); resolve(); }
+          };
+          setTimeout(resolve, 3000);
+        });
+        const priv = rtcIPs.filter(i => i.startsWith("192.168.") || i.startsWith("10.") || i.startsWith("172."));
+        if (priv.length > 0) webRTC_Leak = `EVET ⚠️ (${priv[0]})`;
+      } catch {}
 
-  const copyToClipboard = () => {
-    if(pairingCode) {
-        navigator.clipboard.writeText(pairingCode);
-        setStatusMsg("✅ KOPYALANDI!");
-        setTimeout(() => setStatusMsg("Ajan bağlantısı bekleniyor..."), 1000);
+      const fingerprint = [
+        navigator.userAgent.substring(0, 50),
+        `${screen.width}x${screen.height}`,
+        navigator.language,
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ].join(" · ");
+
+      setOsintData({ ip, isp, city, country, webRTC_Leak, fingerprint });
+    } catch (e) {
+      setOsintError("Tarama başarısız: " + (e.message || "Bilinmeyen hata"));
     }
+    setOsintLoading(false);
   };
 
-  const downloadAgentFile = () => alert("Ajan indirme simülasyonu başlatıldı.");
-
-  const handleLogin = (e) => { 
-      e.preventDefault(); setLoadingAuth(true);
-      if (email === 'admin@mail.com' && password === 'admin') {
-          setIsAdmin(true); setShowLogin(false); fetchHistory();
-      } else { alert("Hatalı giriş! (Local Mod: admin@mail.com / admin)"); }
-      setLoadingAuth(false); 
-  };
-  
-  const handleLogout = () => { setIsAdmin(false); setHistory([]); };
-  
-  // --- WEBRTC IP TESPİTİ (Eski Koddan Geri Getirildi) ---
-  const getWebRTCIP = async () => { 
-      return new Promise((resolve) => { 
-          const rtc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }); 
-          rtc.createDataChannel(""); 
-          rtc.createOffer().then(o => rtc.setLocalDescription(o)); 
-          rtc.onicecandidate = (ice) => { 
-              if (ice && ice.candidate && ice.candidate.candidate) { 
-                  const match = ice.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/); 
-                  if (match) { rtc.close(); resolve(match[1]); } 
-              } 
-          }; 
-          setTimeout(() => resolve(null), 2000); 
-      }); 
-  };
-  
-  const resetState = () => { setLoadingOsint(false); setLoadingAgent(false); setScanResult(null); setPairingCode(null); setOsintData(null); };
-  
-  // 🔥 ESKİ YAPIDAKİ TARAMA FONKSİYONU (RESTORASYON) 🔥
-  const startExternalScan = async () => {
-    resetState(); 
-    setLoadingOsint(true);
-    try {
-      // 1. GERÇEK VERİLERİ ÇEK (IP, ISP, KONUM)
-      const ipRes = await fetch('https://ipapi.co/json/'); 
-      if (!ipRes.ok) throw new Error("IP Servisine Bağlanılamadı (Reklam Engelleyici Kapatın)"); 
-      const ipData = await ipRes.json();
-      
-      // 2. SIZINTI TESTİ YAP
-      const leakedIP = await getWebRTCIP(); 
-      const isVPNLeaking = leakedIP && leakedIP !== ipData.ip;
-      const browserData = { userAgent: navigator.userAgent, webRTC_Leak: isVPNLeaking ? "EVET! (Tehlikeli)" : "Hayır (Güvenli)" };
-      
-      // Verileri State'e kaydet (Ekranda görünmesi için)
-      setOsintData({ 
-          ip: ipData.ip, 
-          isp: ipData.org, 
-          city: ipData.city, 
-          country: ipData.country_name, 
-          lat: ipData.latitude, 
-          lon: ipData.longitude, 
-          ...browserData 
-      });
-      
-      // 3. LOGLARI PYTHON BACKEND'E GÖNDER (Supabase Yerine)
-      // Bu sayede Admin panelinde de görünecek
-      await fetch(`${PYTHON_API_URL}/api/v1/ingest`, {
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-              type: 'OSINT_SCAN', 
-              hostname: 'Browser_Client', 
-              details: `IP: ${ipData.ip} | ISP: ${ipData.org} | Location: ${ipData.city}`, 
-              command_line: 'web_scan_initiated' 
-          })
-      }).catch(() => console.log("Backend log hatası (önemsiz)"));
-
-      // 4. RAPOR OLUŞTUR (AI Yerine Dinamik Şablon)
-      // Groq API Key olmadığı için eski yapıyı "Local" mantığıyla simüle ediyoruz.
-      const scanId = Math.floor(Math.random() * 10000);
-      const riskScore = isVPNLeaking ? 85 : 10;
-      
-      const aiRaporu = JSON.stringify({
-        risk_score: riskScore, 
-        risk_level: isVPNLeaking ? "Yüksek" : "Düşük", 
-        summary: `IP Adresi (${ipData.ip}) ve ISP (${ipData.org}) analizi tamamlandı.`,
-        findings: [
-           { 
-             type: isVPNLeaking ? 'risk' : 'safe', 
-             title: "WebRTC Sızıntı Testi", 
-             desc: isVPNLeaking ? `Gerçek IP adresiniz (${leakedIP}) sızıyor! VPN tünelleme hatası.` : 'WebRTC protokolü güvenli. Gerçek IP gizleniyor.', 
-             fix: isVPNLeaking ? 'Tarayıcı ayarlarından WebRTC özelliğini kapatın.' : ''
-           },
-           { type: "safe", title: "ISP İtibarı", desc: `Bağlantı '${ipData.org}' üzerinden sağlanıyor. Blacklist kaydı yok.` },
-           { type: "safe", title: "Coğrafi Konum", desc: `Dijital konumunuz: ${ipData.city}, ${ipData.country_name} olarak görünüyor.` }
-        ],
-        audit_steps: ["IP Veritabanı Sorgusu", "STUN Sunucusu Testi", "Browser Fingerprint Analizi"]
-      });
-
-      setScanResult({ 
-          id: scanId, 
-          ip_adresi: ipData.ip, 
-          durum: 'tamamlandi', 
-          ai_raporu: aiRaporu 
-      });
-      
-      if(isAdmin) fetchHistory(); // Listeyi güncelle
-
-    } catch (err) { 
-        alert("Tarama Hatası: " + err.message); 
-    } finally { 
-        setLoadingOsint(false); 
-    }
+  const copy = (text, key) => {
+    navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
   };
 
   return (
-    <div className="min-h-screen bg-black text-white p-8 font-mono selection:bg-red-500 selection:text-white relative">
-      {/* LOGIN MODAL */}
-      {showLogin && !isAdmin && (<div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 backdrop-blur-sm"><div className="w-full max-w-sm bg-slate-900 border border-slate-700 p-8 rounded-2xl shadow-2xl relative"><button onClick={() => setShowLogin(false)} className="absolute top-2 right-4 text-slate-500 hover:text-white text-xl">✕</button><h2 className="text-2xl font-bold text-white mb-6 text-center">Admin Access</h2><form onSubmit={handleLogin} className="space-y-4"><input type="email" required className="w-full bg-black/50 border border-slate-700 text-white p-3 rounded" placeholder="admin@mail.com" value={email} onChange={(e) => setEmail(e.target.value)} /><input type="password" required className="w-full bg-black/50 border border-slate-700 text-white p-3 rounded" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /><button type="submit" disabled={loadingAuth} className="w-full bg-red-800 hover:bg-red-700 text-white font-bold py-3 rounded shadow-lg">{loadingAuth ? "..." : "LOGIN"}</button></form></div></div>)}
-      
+    <div className="min-h-screen bg-[#030303] text-white font-mono overflow-x-hidden">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;700;800&display=swap');
+        *{font-family:'JetBrains Mono',monospace;box-sizing:border-box}
+        ::-webkit-scrollbar{display:none}
+        .scan{background-image:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(255,255,255,0.007) 2px,rgba(255,255,255,0.007) 4px);pointer-events:none}
+        @keyframes su{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+        .a1{animation:su .4s 0s both}.a2{animation:su .4s .08s both}
+        .a3{animation:su .4s .16s both}.a4{animation:su .4s .24s both}
+        @keyframes pb{0%,100%{border-color:rgba(239,68,68,0.12)}50%{border-color:rgba(239,68,68,0.35)}}
+        .pb{animation:pb 2.5s infinite}
+      `}</style>
+
+      <div className="fixed inset-0 scan z-0" />
+      <div className="fixed top-0 left-0 right-0 h-px bg-linear-to-r from-transparent via-red-500/40 to-transparent z-50" />
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-150 h-55 bg-red-500/4 blur-3xl pointer-events-none z-0" />
+
       {/* HEADER */}
-      <header className="max-w-6xl mx-auto mb-12 border-b border-slate-800 pb-6 flex justify-between items-end">
-        <div>
-          <h1 className="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-red-600 via-orange-500 to-amber-500 tracking-tighter cursor-pointer hover:opacity-80 transition drop-shadow-[0_2px_2px_rgba(220,38,38,0.8)]" onClick={resetState}>
-            SolidTrace
-          </h1>
-          <p className="text-slate-400 text-sm mt-2">Public Threat Intelligence Platform</p>
-        </div>
-
-        <div className="flex flex-col items-end gap-2">
-          {/* 🔥 TIKLANABİLİR SOC LİNKİ 🔥 */}
-          <Link href="/soc" className={`text-xs px-3 py-1 rounded transition flex items-center gap-2 border cursor-pointer ${socStatus === 'online' ? 'bg-emerald-900/30 text-emerald-400 border-emerald-500/30 animate-pulse' : 'bg-slate-800 text-slate-500 border-slate-700 hover:bg-slate-700'}`}>
-              {socStatus === 'online' ? '● SOC SYSTEM ONLINE' : '○ SOC OFFLINE (GİRİŞ)'}
-          </Link>
-
-          {isAdmin ? (
-            <div className="flex gap-2 animate-in fade-in">
-              <span className="text-xs text-slate-500 py-1 border border-slate-800 px-3 rounded">Admin Mode</span>
-              <button onClick={handleLogout} className="text-xs text-red-500 border border-red-900/50 hover:bg-red-900/20 px-3 py-1 rounded transition">EXIT</button>
+      <header className="sticky top-0 z-40 border-b border-white/5 bg-black/70 backdrop-blur-2xl">
+        <div className="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-7 h-7 bg-red-500/10 border border-red-500/20 rounded-lg flex items-center justify-center">
+              <Shield size={13} className="text-red-400" />
             </div>
-          ) : (
-            <div className="flex items-center justify-end gap-2 text-emerald-500 font-bold text-xs">
-              <span className="relative flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-              </span> 
-              LIVE
+            <span className="text-xs font-black tracking-widest">SOLIDTRACE</span>
+            <span className="text-[8px] text-white/20 border border-white/10 px-1.5 py-0.5 rounded tracking-widest">SOC v6.1</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className={`hidden sm:flex items-center gap-1.5 text-[9px] px-2.5 py-1.5 rounded-full border font-black ${
+              socOnline
+                ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-400"
+                : "border-red-500/20 bg-red-500/5 text-red-400 animate-pulse"
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${socOnline ? "bg-emerald-400" : "bg-red-500"}`} />
+              {socOnline ? "BACKEND ONLINE" : "BACKEND OFFLINE"}
             </div>
-          )}
+            <Link href="/soc" className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all">
+              SOC Paneli <ArrowRight size={11} />
+            </Link>
+          </div>
         </div>
       </header>
 
-      {/* ANA EKRAN */}
-      {!pairingCode && !scanResult && (
-      <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
-        
-        {/* OSINT KUTUSU (AKTİF HALE GETİRİLDİ) */}
-        <div className="bg-slate-900/30 border border-slate-800 p-8 rounded-2xl hover:border-red-500/80 hover:bg-slate-900/50 transition duration-300 shadow-2xl backdrop-blur-sm group relative overflow-hidden"><div className="absolute top-0 right-0 w-40 h-40 bg-red-600/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none group-hover:bg-red-600/20 transition"></div><div className="flex items-center gap-4 mb-6"><div className="p-3 bg-red-500/10 rounded-xl group-hover:scale-110 transition duration-300 border border-red-500/20"><span className="text-3xl">🌐</span></div><div><h2 className="text-2xl font-bold text-white">OSINT & Browser</h2><p className="text-slate-500 text-xs">IP + WebRTC + Fingerprint</p></div></div><p className="text-slate-400 mb-8 text-sm leading-relaxed">Public IP, <span className="text-red-400 font-bold">WebRTC Sızıntısı</span> ve Tarayıcı Parmak İzi analizi ile gizliliğini test et.</p><button onClick={startExternalScan} disabled={loadingOsint} className="w-full bg-gradient-to-r from-red-900/80 to-red-800/80 hover:from-red-800 hover:to-red-700 text-white border border-red-900 hover:border-red-500 py-4 rounded-xl font-bold transition duration-300 flex items-center justify-center gap-2 shadow-lg shadow-red-900/20">{loadingOsint ? <span className="animate-pulse">ANALİZ YAPILIYOR...</span> : "HIZLI TARAMA BAŞLAT"}</button></div>
-        
-        {/* LOCAL AGENT KUTUSU */}
-        <div className={`bg-slate-900/30 border p-8 rounded-2xl transition shadow-2xl group relative overflow-hidden ${socStatus === 'online' ? 'border-emerald-500/50 shadow-[0_0_30px_rgba(16,185,129,0.1)]' : 'border-slate-800 hover:border-emerald-500/80 hover:bg-slate-900/50'}`}>
-            <div className={`absolute top-0 right-0 w-40 h-40 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none transition duration-1000 ${socStatus === 'online' ? 'bg-emerald-600/20' : 'bg-emerald-600/10'}`}></div>
+      <div className="max-w-6xl mx-auto px-5 pb-24 relative z-10 space-y-10 pt-14">
 
-            <div className="flex items-center gap-4 mb-6">
-                <div className={`p-3 rounded-xl transition duration-300 border ${socStatus === 'online' ? 'bg-emerald-500/20 border-emerald-500' : 'bg-emerald-500/10 border-emerald-500/20'}`}>
-                    <span className="text-3xl">🛡️</span>
-                </div>
-                <div>
-                    <h2 className="text-2xl font-bold text-white">Local Agent</h2>
-                    <p className={`text-xs ${socStatus === 'online' ? 'text-emerald-400 font-bold' : 'text-slate-500'}`}>
-                        {socStatus === 'online' ? '● SYSTEM PROTECTED' : 'Deep System Analysis'}
+        {/* HERO */}
+        <div className="a1">
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-red-500/5 border border-red-500/15 rounded-full text-[9px] text-red-400 font-black uppercase tracking-widest mb-6">
+            <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+            Endpoint Detection &amp; Response
+          </div>
+          <h1 className="text-5xl sm:text-6xl font-black tracking-[-0.04em] leading-none mb-5">
+            <span className="text-white">Uç nokta</span><br />
+            <span className="text-white/10">güvenliği,</span><br />
+            <span className="bg-linear-to-r from-red-400 to-orange-400 bg-clip-text text-transparent">
+              sıfır karmaşıklık.
+            </span>
+          </h1>
+          <p className="text-white/30 text-sm leading-relaxed max-w-md">
+            SolidTrace — Windows uç noktalarınızı gerçek zamanlı izler, tehditleri anında SOC panelinize raporlar.
+          </p>
+          {lastAlert && (
+            <div className="mt-5 inline-flex items-center gap-2.5 px-4 py-2 bg-red-500/5 border border-red-500/15 rounded-xl text-[10px]">
+              <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse shrink-0" />
+              <span className="text-red-400 font-black">{lastAlert.severity}</span>
+              <span className="text-white/35">{lastAlert.rule}</span>
+              <span className="text-white/20">@{lastAlert.hostname}</span>
+            </div>
+          )}
+        </div>
+
+        {/* İKİ KOLON */}
+        <div className="a2 grid sm:grid-cols-2 gap-4">
+
+          {/* AGENT KARTI */}
+          <div className={`pb border rounded-2xl overflow-hidden flex flex-col ${
+            socOnline
+              ? "bg-emerald-500/2.5 border-emerald-500/15"
+              : "bg-white/1.5 border-white/5"
+          }`}>
+            <div className="p-5 border-b border-white/5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center border ${
+                    socOnline
+                      ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                      : "bg-white/3 border-white/5 text-white/30"
+                  }`}>
+                    <Shield size={15} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-black text-white">SolidTrace Agent</p>
+                    <p className={`text-[9px] ${socOnline ? "text-emerald-400" : "text-white/25"}`}>
+                      {socOnline ? "● BACKEND AKTİF" : "Windows x64"}
                     </p>
+                  </div>
                 </div>
+                <span className="text-[8px] font-mono text-white/25">
+                  v{agentInfo?.version ?? "1.0.0"} · {agentInfo?.size_mb ?? "—"}MB
+                </span>
+              </div>
             </div>
 
-            {socStatus === 'online' ? (
-                <div className="animate-in fade-in">
-                    <div className="bg-emerald-900/20 border border-emerald-500/30 rounded-lg p-4 mb-6">
-                        <div className="flex justify-between items-center mb-2">
-                            <span className="text-emerald-200 text-sm font-bold">IPS ENGINE ACTIVE</span>
-                            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping"></span>
-                        </div>
-                        <p className="text-emerald-400/70 text-xs">Ajan şu an aktif koruma modunda.</p>
+            <div className="p-5 flex flex-col gap-4 flex-1">
+              {socOnline && status && (
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: "Online Agent", val: status.agents_online },
+                    { label: "Toplam Olay",  val: status.total_alerts },
+                    { label: "Uptime",       val: fmtUptime(status.uptime_seconds) },
+                  ].map(s => (
+                    <div key={s.label} className="bg-black/30 border border-white/5 rounded-xl p-2.5 text-center">
+                      <p className="text-[8px] text-white/25 mb-1">{s.label}</p>
+                      <p className="text-xs font-black text-emerald-400">{s.val}</p>
                     </div>
-                    
-                    <div className="flex flex-col gap-2">
-                        <Link href="/soc" className="w-full bg-emerald-700 hover:bg-emerald-600 text-white text-center py-3 rounded-lg font-bold text-sm transition shadow-lg shadow-emerald-900/20">
-                            DASHBOARD AÇ (LIVE)
-                        </Link>
-                         <div className="flex gap-2">
-                            <button onClick={downloadAgentFile} className="flex-1 text-xs bg-slate-800 hover:text-white hover:bg-slate-700 py-2 rounded border border-slate-700 transition">⬇️ İndir</button>
-                            <button onClick={startLocalScan} className="flex-1 text-xs bg-slate-800 hover:text-white hover:bg-slate-700 py-2 rounded border border-slate-700 transition">🔄 Kod</button>
-                         </div>
-                    </div>
+                  ))}
                 </div>
-            ) : (
+              )}
+
+              <div className="flex flex-wrap gap-1.5">
+                {FEATURES.map((f, i) => (
+                  <div key={i} className="flex items-center gap-1 px-2 py-1 bg-white/2.5 border border-white/5 rounded-lg text-[8px] text-white/30">
+                    <span className="text-white/20">{f.icon}</span>{f.label}
+                  </div>
+                ))}
+              </div>
+
+              {agentInfo?.sha256 && agentInfo.sha256 !== "—" && (
+                <div className="flex items-center gap-2 bg-black/30 border border-white/5 rounded-xl px-3 py-2">
+                  <span className="text-[8px] text-white/20 shrink-0">SHA256</span>
+                  <code className="text-[8px] text-white/30 font-mono flex-1 truncate">{agentInfo.sha256}</code>
+                  <button onClick={() => copy(agentInfo.sha256, "sha")} className="text-white/20 hover:text-white/50 transition shrink-0">
+                    <span className="flex">{copied === "sha" ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}</span>
+                  </button>
+                </div>
+              )}
+
+              <div className="mt-auto flex flex-col gap-2">
+                <a
+                  href={`${API}/api/agent/download`}
+                  onClick={e => { if (!socOnline) { e.preventDefault(); alert("Backend çalışmıyor — önce backend'i başlatın."); }}}
+                  className="flex items-center justify-center gap-2 py-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all group"
+                >
+                  <Download size={14} className="group-hover:-translate-y-0.5 transition-transform" />
+                  Agent İndir (.zip)
+                </a>
+                <Link href="/soc" className="flex items-center justify-center gap-2 py-2.5 bg-white/2.5 hover:bg-white/5 border border-white/5 text-white/40 hover:text-white/70 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all">
+                  SOC Dashboard <ChevronRight size={11} />
+                </Link>
+              </div>
+            </div>
+          </div>
+
+          {/* OSINT KARTI */}
+          <div className="bg-white/1.5 border border-white/5 rounded-2xl overflow-hidden flex flex-col">
+            <div className="p-5 border-b border-white/5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 bg-blue-500/10 border border-blue-500/15 rounded-xl flex items-center justify-center text-blue-400">
+                  <Search size={15} />
+                </div>
                 <div>
-                    <p className="text-slate-400 mb-8 text-sm leading-relaxed">Ajanı <b>bir kez indir</b>, sürekli izleme yap. Log analizi, derin port taraması ve anlık durum.</p>
-                    <div className="flex flex-col gap-3">
-                        <button onClick={startLocalScan} disabled={loadingAgent} className="w-full bg-gradient-to-r from-emerald-900/80 to-emerald-800/80 hover:from-emerald-800 hover:to-emerald-700 text-white border border-emerald-900 hover:border-emerald-500 py-3 rounded-xl font-bold transition duration-300 shadow-lg shadow-emerald-900/20">{loadingAgent ? "..." : "KOD OLUŞTUR"}</button>
-                        <Link href="/soc" className="w-full text-center py-2 text-xs text-slate-500 hover:text-white border border-slate-800 rounded hover:bg-slate-800 transition">
-                            ⚠️ Manuel Dashboard Girişi (Offline)
-                        </Link>
-                    </div>
+                  <p className="text-xs font-black text-white">OSINT &amp; Gizlilik Testi</p>
+                  <p className="text-[9px] text-white/25">IP · WebRTC Sızıntısı · Parmak İzi</p>
                 </div>
-            )}
+              </div>
+            </div>
+
+            <div className="p-5 flex flex-col gap-3 flex-1">
+              {!osintData ? (
+                <>
+                  <p className="text-[10px] text-white/30 leading-relaxed">
+                    Public IP adresinizi, <span className="text-blue-400">WebRTC sızıntısını</span> ve
+                    tarayıcı parmak izinizi analiz edin. Veriler sunucuya gönderilmez.
+                  </p>
+                  {osintError && (
+                    <div className="flex items-center gap-2 text-[10px] text-red-400 bg-red-500/5 border border-red-500/15 rounded-xl px-3 py-2">
+                      <AlertCircle size={11} /> {osintError}
+                    </div>
+                  )}
+                  <button
+                    onClick={runOsint}
+                    disabled={osintLoading}
+                    className="mt-auto py-3 bg-blue-600/70 hover:bg-blue-500 active:scale-95 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+                  >
+                    {osintLoading && <RefreshCw size={13} className="animate-spin" />}
+                    {!osintLoading && <Search size={13} />}
+                    <span>{osintLoading ? "Taranıyor..." : "Tarama Başlat"}</span>
+                  </button>
+                </>
+              ) : (
+                <div className="flex flex-col gap-2.5 flex-1">
+                  {[
+                    { label: "IP Adresi",       val: osintData.ip,  color: "text-blue-400" },
+                    { label: "Servis Sağlayıcı", val: osintData.isp, color: "text-white/50" },
+                    { label: "Konum",            val: `${osintData.city}, ${osintData.country}`, color: "text-white/50" },
+                    { label: "WebRTC Sızıntısı", val: osintData.webRTC_Leak,
+                      color: osintData.webRTC_Leak.includes("EVET") ? "text-red-400" : "text-emerald-400" },
+                  ].map(r => (
+                    <div key={r.label} className="flex items-center justify-between bg-black/30 border border-white/5 rounded-xl px-3 py-2.5">
+                      <span className="text-[9px] text-white/25 uppercase tracking-widest">{r.label}</span>
+                      <span className={`text-xs font-black font-mono ${r.color}`}>{r.val}</span>
+                    </div>
+                  ))}
+                  {osintData.fingerprint && (
+                    <div className="bg-black/30 border border-white/5 rounded-xl px-3 py-2.5">
+                      <p className="text-[8px] text-white/20 mb-1 uppercase tracking-widest">Parmak İzi</p>
+                      <p className="text-[9px] text-white/30 font-mono break-all leading-relaxed">{osintData.fingerprint}</p>
+                    </div>
+                  )}
+                  {osintData.webRTC_Leak.includes("EVET") && (
+                    <div className="flex items-start gap-2 bg-red-500/5 border border-red-500/15 rounded-xl px-3 py-2.5 text-[9px] text-red-400">
+                      <AlertCircle size={11} className="shrink-0 mt-0.5" />
+                      VPN kullansanız bile gerçek IP'niz sızdı. Tarayıcı WebRTC ayarlarını kapatın.
+                    </div>
+                  )}
+                  <button
+                    onClick={() => { setOsintData(null); setOsintError(null); }}
+                    className="mt-auto py-2 bg-white/2.5 hover:bg-white/5 border border-white/5 text-white/35 hover:text-white/65 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all"
+                  >
+                    Yeni Tarama
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-        
-        {isAdmin && (
-          <div className="mt-8 bg-slate-900/50 border border-slate-800 rounded-xl p-6 overflow-hidden md:col-span-2 animate-in fade-in duration-700">
-             {/* Admin Tablosu (Kısaltıldı) */}
+
+        {/* KURULUM ADIMLARI */}
+        <div className="a3">
+          <p className="text-[9px] text-white/20 uppercase tracking-widest mb-5 flex items-center gap-3">
+            <span className="flex-1 h-px bg-white/5" />Kurulum — 4 Adım<span className="flex-1 h-px bg-white/5" />
+          </p>
+          <div className="grid sm:grid-cols-4 gap-2.5">
+            {STEPS.map((step, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveStep(i)}
+                className={`text-left p-4 rounded-xl border transition-all ${
+                  activeStep === i
+                    ? "bg-white/5 border-red-500/20 text-white"
+                    : "bg-white/1 border-white/5 text-white/30 hover:border-white/10 hover:text-white/50"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`text-[9px] font-black tracking-widest ${activeStep === i ? "text-red-400" : "text-white/20"}`}>{step.n}</span>
+                  <span className={activeStep === i ? "text-red-400" : "text-white/20"}>{step.icon}</span>
+                </div>
+                <p className="text-xs font-black mb-1">{step.title}</p>
+                <p className="text-[9px] leading-relaxed opacity-55">{step.desc}</p>
+                {step.code && activeStep === i && (
+                  <div className="mt-3 flex items-center gap-2 bg-black/50 border border-white/5 rounded-lg px-2.5 py-2">
+                    <code className="text-[10px] text-emerald-400 flex-1 font-mono">{step.code}</code>
+                    <button
+                      onClick={e => { e.stopPropagation(); copy(step.code, `step-${i}`); }}
+                      className="text-white/20 hover:text-white/55 transition"
+                    >
+                      <span className="flex">{copied === `step-${i}` ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}</span>
+                    </button>
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* SİSTEM DURUMU */}
+        {status && (
+          <div className="a4 bg-white/1 border border-white/5 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-[9px] text-white/25 uppercase tracking-widest flex items-center gap-2">
+                <Server size={10} /> Sistem Durumu
+              </p>
+              <div className="flex items-center gap-3">
+                {status.uptime_seconds > 0 && (
+                  <span className="text-[9px] text-white/20 font-mono flex items-center gap-1">
+                    <Clock size={9} /> {fmtUptime(status.uptime_seconds)}
+                  </span>
+                )}
+                <button onClick={fetchStatus} className="text-white/20 hover:text-white/50 transition">
+                  <RefreshCw size={11} />
+                </button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {[
+                { label: "Backend API",  val: status.backend ? "Çalışıyor" : "Kapalı",       ok: status.backend },
+                { label: "PostgreSQL",   val: status.db      ? "Bağlı"     : "Bağlantı yok", ok: status.db },
+                { label: "Online Agent", val: `${status.agents_online} makine`,               ok: true },
+                { label: "Toplam Olay",  val: status.total_alerts.toLocaleString("tr-TR"),    ok: true },
+              ].map((s, i) => (
+                <div key={i} className="bg-black/30 border border-white/5 rounded-xl p-3">
+                  <p className="text-[8px] text-white/20 uppercase tracking-widest mb-2">{s.label}</p>
+                  <div className="flex items-center gap-2">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.ok ? "bg-emerald-400" : "bg-red-500 animate-pulse"}`} />
+                    <span className="text-xs font-black text-white/50">{s.val}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {!status.backend && (
+              <div className="mt-3 bg-red-500/5 border border-red-500/15 rounded-xl p-3">
+                <p className="text-[8px] text-red-400 font-black uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                  <AlertCircle size={10} /> Backend başlatılmamış
+                </p>
+                <div className="flex items-center gap-2 bg-black/50 rounded-lg px-3 py-2 border border-white/5">
+                  <code className="text-[9px] text-white/35 font-mono flex-1">cd backend && python api_advanced_v2.py</code>
+                  <button onClick={() => copy("cd backend && python api_advanced_v2.py", "bcmd")} className="text-white/20 hover:text-white/55 transition">
+                    <span className="flex">{copied === "bcmd" ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
-      </main>
-      )}
+      </div>
 
-      {/* --- SONUÇ EKRANI (Dashboard UI) --- */}
-      {scanResult && scanResult.durum === 'tamamlandi' && (
-        <div className="max-w-7xl mx-auto mt-8 animate-in slide-in-from-bottom-8 duration-700">
-            <div className="flex gap-4 mb-6">
-                <button onClick={resetState} className="flex items-center gap-2 text-slate-400 hover:text-white transition px-4 py-2 hover:bg-slate-800 rounded-lg">← Yeni Tarama</button>
-            </div>
-
-            {(() => {
-                let report = null;
-                try { report = JSON.parse(scanResult.ai_raporu); } catch { return null; }
-                
-                if (report) {
-                    return (
-                        <>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                                <div className="bg-slate-900/80 border border-slate-700 p-6 rounded-2xl flex items-center gap-6">
-                                    <div className="relative w-24 h-24 flex items-center justify-center">
-                                        <svg className="w-full h-full transform -rotate-90">
-                                            <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-slate-700" />
-                                            <circle cx="48" cy="48" r="40" stroke="currentColor" strokeWidth="8" fill="transparent" className={report.risk_score > 70 ? "text-red-500" : "text-green-500"} strokeDasharray={251.2} strokeDashoffset={251.2 - (251.2 * report.risk_score) / 100} />
-                                        </svg>
-                                        <span className="absolute text-2xl font-bold text-white">{report.risk_score}</span>
-                                    </div>
-                                    <div><h3 className="text-slate-400 text-sm font-bold uppercase">Güvenlik Skoru</h3><p className={`text-2xl font-bold ${report.risk_score > 70 ? 'text-red-500' : 'text-green-500'}`}>{report.risk_level}</p><p className="text-xs text-slate-500 mt-1">{report.summary}</p></div>
-                                </div>
-                                <div className="col-span-2 bg-slate-900/80 border border-slate-700 p-6 rounded-2xl grid grid-cols-2 gap-4">
-                                    {/* OSINT DATA DETAYLARI */}
-                                    {osintData && (
-                                        <>
-                                            <div><div className="text-xs text-slate-500">IP ADRESİ</div><div className="text-xl font-bold text-blue-400">{osintData.ip}</div></div>
-                                            <div><div className="text-xs text-slate-500">SERVİS SAĞLAYICI</div><div className="text-xl font-bold text-white">{osintData.isp}</div></div>
-                                            <div><div className="text-xs text-slate-500">KONUM</div><div className="text-lg text-slate-300">{osintData.city}, {osintData.country}</div></div>
-                                            <div><div className="text-xs text-slate-500">WEBRTC SIZINTISI</div><div className={`text-lg font-bold ${osintData.webRTC_Leak.includes("EVET") ? "text-red-500" : "text-green-500"}`}>{osintData.webRTC_Leak}</div></div>
-                                        </>
-                                    )}
-                                </div>
-                            </div>
-                            
-                            <div className="grid grid-cols-1 gap-8">
-                                <div className="space-y-4">
-                                    <h3 className="text-xl font-bold text-white flex items-center gap-2"><span className="text-indigo-400">🧠</span> Analiz Bulguları</h3>
-                                    {report.findings.map((item, index) => (
-                                        <div key={index} className={`p-6 rounded-xl border flex items-start gap-4 transition ${item.type === 'risk' ? 'bg-red-900/20 border-red-500/30' : 'bg-emerald-900/20 border-emerald-500/30'}`}>
-                                            <div className={`p-3 rounded-lg ${item.type === 'risk' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>{item.type === 'risk' ? '⚠️' : '🛡️'}</div>
-                                            <div><h4 className={`font-bold text-lg ${item.type === 'risk' ? 'text-red-200' : 'text-emerald-200'}`}>{item.title}</h4><p className="text-slate-400 text-sm mt-1">{item.desc}</p></div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </>
-                    );
-                }
-                return null;
-            })()}
+      <footer className="border-t border-white/5 py-6">
+        <div className="max-w-6xl mx-auto px-5 flex items-center justify-between text-[9px] text-white/15">
+          <span className="font-black tracking-widest">SOLIDTRACE SOC © 2026</span>
+          <Link href="/soc" className="flex items-center gap-1 hover:text-white/40 transition">
+            SOC Paneli <ChevronRight size={9} />
+          </Link>
         </div>
-      )}
-      
-      <footer className="max-w-6xl mx-auto mt-20 text-center text-slate-600 text-xs pb-8"><p>SolidTrace Threat Intelligence © 2026</p>{!isAdmin && <button onClick={() => setShowLogin(true)} className="mt-4 opacity-10 hover:opacity-100 transition">Admin Access</button>}</footer>
+      </footer>
     </div>
   );
 }

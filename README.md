@@ -1,9 +1,8 @@
 # 🛡️ SolidTrace: Advanced EDR & Heuristic Defense System
 
-![Status](https://img.shields.io/badge/Status-Beta_v6.2-blue)
-![Security](https://img.shields.io/badge/Security-Rust_Powered-orange)
-![Dashboard](https://img.shields.io/badge/Dashboard-Next.js-black)
+**SolidTrace**, modern siber tehditlere karşı uç noktaları (endpoint) korumak amacıyla geliştirilmiş, düşük kaynak tüketimli ve yüksek görünürlüklü bir **EDR (Endpoint Detection & Response)** çözümüdür. 
 
+<<<<<<< HEAD
 **SolidTrace**, modern siber tehditlere karşı uç noktaları (endpoint) korumak amacıyla geliştirilmiş, düşük kaynak tüketimli ve yüksek görünürlüklü bir **EDR (Endpoint Detection & Response)** çözümüdür. 
 
 Geleneksel imza tabanlı sistemlerin ötesine geçerek; süreç doğrulama (Path Verification), davranışsal analiz (Heuristics) ve dosya bütünlük denetimi (FIM) yeteneklerini tek bir çatıda birleştirir.
@@ -48,11 +47,55 @@ SolidTrace, sadece süreç ismine bakarak karar vermez. Malware yazarlarının e
 - **Integrity Monitor (FIM):** Kritik sistem dosyalarının (hosts, drivers vb.) yetkisiz değiştirilmesini anlık izler.
 
 
+=======
+Sadece bir log toplama aracı değil; davranışsal analiz (heuristics), dosya bütünlük denetimi (FIM) ve süreç doğrulama yeteneklerine sahip entegre bir güvenlik motorudur.
+
+
+
+---
+
+## 🏗️ Mimari ve Mühendislik Kararları
+
+Proje, performans ve ölçeklenebilirlik dengesini sağlamak için üç katmanlı bir yapıda kurgulanmıştır:
+
+### 1. 🦀 Agent (Rust - The Sentinel)
+Neden Rust? Düşük seviyeli sistem erişimi ve bellek güvenliği (memory safety) nedeniyle seçildi.
+- **Düşük Kaynak Tüketimi:** Geleneksel antivirüslerin aksine CPU'yu %1'in altında tutar.
+- **Asenkron Motor:** `tokio` kütüphanesi ile log toplama ve tarama işlemlerini birbirini engellemeden (non-blocking) yürütür.
+- **Notify tabanlı FIM:** Dosya değişikliklerini sürekli taramak (polling) yerine işletim sistemi seviyesinde (kernel events) dinler.
+
+### 2. 🐍 Backend (FastAPI - The Brain)
+- **WebSocket Gateway:** Ajanlardan gelen binlerce veriyi dashboard'a anlık (real-time) akıtır.
+- **Rule Engine:** Gelen ham verileri, tanımlı güvenlik kurallarıyla (YARA & SQL) süzerek risk skorlaması yapar.
+
+### 3. ⚛️ Dashboard (Next.js/TS - The Command Center)
+- **SOC Focus UI:** Analistlerin "Log Yorgunluğu" (Alert Fatigue) yaşamaması için gelişmiş gürültü filtreleri (Noise Filtering) içerir.
+- **Client-Side Slicing:** Arama ve filtreleme işlemleri tarayıcı tarafında yapılarak milisaniyelik hız sunar.
+
+---
+
+## 🔥 Temel Güvenlik Özellikleri (Teknik Derinlik)
+
+### 👁️ Akıllı Süreç Doğrulama (Anti-Masquerading)
+Sadece süreç ismine güvenmek en büyük güvenlik açığıdır. SolidTrace, "Masquerading" saldırılarını şu mantıkla engeller:
+- **Mantık:** Eğer `svchost.exe` çalışıyorsa, bu dosyanın yolu mutlaka `C:\Windows\System32` olmalıdır. 
+- **Tespit:** Eğer bu isimdeki dosya kullanıcı masaüstünden çalıştırılıyorsa, sistem bunu otomatik olarak **CRITICAL** risk olarak işaretler.
+
+### 📁 Davranışsal Ransomware Tespiti (Heuristic Analysis)
+İmza tabanlı taramalar sıfırıncı gün (0-day) saldırılarında başarısız olur. 
+- **Mantık:** SolidTrace, kritik klasörlerdeki (Desktop, Documents) dosya değişim hızını ölçer.
+- **Tespit:** Eğer 2 saniye içinde 20'den fazla dosya üzerinde "Modify" işlemi yapılırsa, bu bir şifreleme saldırısı olarak algılanır ve alarm üretilir.
+
+### 🔍 Akıllı Gürültü Filtreleme (Signal over Noise)
+EDR'lerin en büyük sorunu olan gereksiz log kalabalığı, mühendislik seviyesinde çözülmüştür:
+- İşletim sisteminin kendi rutinleri (Chrome temp dosyaları, Windows Update logları vb.) ajan seviyesinde elenerek backend trafiği optimize edilir.
+>>>>>>> b0baf95 (🚀 EDR Ajanı, Yapay Zeka (Groq) ve Güvenlik Modülleri hatasız olarak ayağa kaldırıldı!)
 
 ---
 
 ## 🛠️ Teknoloji Yığını
 
+<<<<<<< HEAD
 | Katman | Teknoloji | Amaç |
 | :--- | :--- | :--- |
 | **Agent** | Rust, Tokio, Sysinfo, Notify | Performance & System Level Monitoring |
@@ -65,6 +108,21 @@ SolidTrace, sadece süreç ismine bakarak karar vermez. Malware yazarlarının e
 ## 🚀 Kurulum
 
 ### 1. Backend (The Brain)
+=======
+| Bileşen | Teknoloji | Görev |
+| :--- | :--- | :--- |
+| **Agent Core** | Rust (sysinfo, notify, tokio) | System Monitoring |
+| **Scanner** | YARA Engine | Signature Based Detection |
+| **Backend** | Python, FastAPI | API & WebSocket Hub |
+| **Frontend** | React, Next.js, TailwindCSS | SOC Dashboard |
+| **Data Flow** | WebSocket | Real-time Streaming |
+
+---
+
+## 🚀 Kurulum ve Çalıştırma
+
+### 1. Backend
+>>>>>>> b0baf95 (🚀 EDR Ajanı, Yapay Zeka (Groq) ve Güvenlik Modülleri hatasız olarak ayağa kaldırıldı!)
 ```bash
 cd backend
 pip install -r requirements.txt
