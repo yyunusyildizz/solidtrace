@@ -1,27 +1,20 @@
-// main.rs - v2.0 (REVISED)
-// Düzeltmeler:
-//   - enable_persistence() HKCU Run anahtarı → meşru bir EDR için açıklanmalı
-//     Yorum satırına neden yapıldığı ve nasıl devre dışı bırakılacağı eklendi
-//   - request_elevation() spawn sonrası exit(0) yarış durumu → wait() eklendi
-//   - Ana loop sleep(60) → graceful shutdown sinyali (Ctrl+C) eklendi
-//   - Modül başlatma sırası: WebSocket bağlantısı scanner'dan önce kurulmalı
-//   - rules_path hardcoded "D:\Downloads..." → env değişkeni ile okunuyor (scanner.rs ile uyumlu)
+// #![windows_subsystem = "windows"]  // Siyah ekranı gizlemek için bu satırı aç
 
-// Konsol penceresini gizlemek için:
-// #![windows_subsystem = "windows"]
-
+mod agent_config;    // ← YENİ: Merkezi config
+mod tls_pinning;     // ← YENİ: TLS sertifika pinning
+mod integrity;       // ← YENİ: Binary bütünlük + anti-debug + watchdog
 mod api_client;
 mod file_monitor;
 mod usb_monitor;
 mod canary_monitor;
 mod isolation_manager;
+mod usb_control;
 mod registry_monitor;
 mod network_monitor;
 mod scanner;
 mod process_monitor;
 mod yara_scanner;
 mod updater;
-mod event_log_monitor; // Windows Event Log okuyucu (Security/System/Application)
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,190 +23,202 @@ use std::process::Command;
 use winreg::enums::*;
 use winreg::RegKey;
 use tokio::time::sleep;
+
 use is_elevated::is_elevated;
 use api_client::ApiClient;
+use agent_config::AgentConfig;
+use integrity::Watchdog;
 
 #[tokio::main]
 async fn main() {
-    // .env dosyasını yükle (varsa)
-    // FIX: Env dosyası yüklenmeden önce hiçbir env::var okunmamalı
-    let _ = dotenvy::dotenv(); // .env dosyasını yükle — bulunamazsa sessizce devam et
-
-    // 1. YETKİ KONTROLÜ
+    // ── 1. YETKİ KONTROLÜ ────────────────────────────────────────────────────
     if !is_elevated() {
-        println!("⚠️ [SYSTEM] Yönetici yetkisi gerekiyor, yükseltme isteniyor...");
+        println!("⚠️  [SYSTEM] Admin izni alınıyor...");
         request_elevation();
         return;
     }
 
-    // 2. BANNER
     println!("============================================");
-    println!("    SOLIDTRACE AGENT v30.1 (CORE_RTP)      ");
-    println!("    Intelligence & Global Threat Feed      ");
+    println!("    SOLIDTRACE AGENT v31.0 (SECURE)        ");
+    println!("    Disk Buffer + TLS Pinning + Watchdog   ");
     println!("============================================");
 
-    // 3. YARA KURAL GÜNCELLEMESİ
-    // FIX: rules_path env'den alınıyor — scanner.rs ile tutarlı
-    let rules_path = env::var("YARA_RULES_PATH")
-        .unwrap_or_else(|_| "rules/main.yar".to_string());
+    // ── 2. GÜVENLİK KONTROLLERİ (en başta) ─────────────────────────────────
+    // Binary bütünlük + anti-debug + TLS pinning startup check
+    integrity::run_security_checks().await;
 
+    // ── 3. CONFIG YÜKLE (hardcoded const YOK) ────────────────────────────────
+    let cfg = AgentConfig::get();
+    println!("⚙️  [CONFIG] Server: {}", cfg.server_base);
+    println!("⚙️  [CONFIG] Kuyruk: {}", cfg.queue_path.display());
+    println!("⚙️  [CONFIG] YARA  : {}", cfg.rules_path.display());
+
+    // ── 4. YARA KURAL GÜNCELLEMESİ (relative path) ──────────────────────────
     println!("🌐 [UPDATER] Küresel tehdit veritabanı kontrol ediliyor...");
-    if let Err(e) = updater::update_yara_rules(&rules_path).await {
-        println!("⚠️ [UPDATER] Güncelleme atlandı (yerel kurallar aktif): {}", e);
+    if let Err(e) = updater::update_yara_rules(
+        cfg.rules_path.to_str().unwrap_or("rules/main.yar")
+    ).await {
+        println!("⚠️  [UPDATER] Güncelleme atlandı (yerel kurallar aktif): {}", e);
     }
 
-    // 4. KALICILIK (OPSİYONEL — Kurumsal dağıtımda GPO ile yönetilmeli)
-    // FIX: Persistence varsayılan AÇIK, env ile kapatılabilir
-    // SOLIDTRACE_PERSISTENCE=false yapılırsa devre dışı kalır
-    let persistence_enabled = env::var("SOLIDTRACE_PERSISTENCE")
-        .map(|v| v.to_lowercase() != "false")
-        .unwrap_or(true);
-
-    if persistence_enabled {
-        match enable_persistence() {
-            Ok(_)  => println!("✅ [SYSTEM] Başlangıçta çalıştırma (Persistence) aktif."),
-            Err(e) => println!("⚠️ [SYSTEM] Persistence hatası (yönetici yetkisi gerekebilir): {}", e),
-        }
-    } else {
-        println!("ℹ️  [SYSTEM] Persistence devre dışı (SOLIDTRACE_PERSISTENCE=false).");
+    // ── 5. KALICILIK (PERSISTENCE) ────────────────────────────────────────────
+    match enable_persistence() {
+        Ok(_)  => println!("✅ [SYSTEM] Persistence aktif."),
+        Err(e) => println!("⚠️  [SYSTEM] Persistence hatası: {}", e),
     }
 
-    // 5. API İSTEMCİSİ
+    // ── 6. API CLIENT ─────────────────────────────────────────────────────────
     let client = Arc::new(ApiClient::new());
 
-    // --- ARKA PLAN GÖREVLERİ ---
-    // FIX: WebSocket ilk başlatılıyor — komutları almaya hazır olmadan scanner başlamamalı
+    // ── 7. WATCHDOG (kritik task'ları izle) ──────────────────────────────────
+    // 300 saniye — scanner 600s bekleyebilir, diğer task'lar periyodik çalışır
+    let (watchdog, _wd_handle) = Watchdog::spawn(300);
+    let watchdog = Arc::new(watchdog);
 
-    // A. KOMUTA MERKEZİ (WebSocket) — İLK BAŞLAT
-    let c_listen = client.clone();
+    // ── 8. ARKA PLAN GÖREVLERİ ───────────────────────────────────────────────
+
+    // A. WebSocket (Komuta Merkezi)
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        c_listen.connect_and_listen().await;
+        loop {
+            c.connect_and_listen().await;
+            wd.heartbeat("ws_listener").await;
+            sleep(Duration::from_secs(1)).await;
+        }
     });
 
-    // Kısa bekleme — WebSocket bağlantısı kurulsun
-    sleep(Duration::from_secs(1)).await;
-
-    // B. PROCESS MONITOR
-    let c_proc = client.clone();
+    // B. Process Monitor — heartbeat her 60s gönderilir (monitor sonsuz döngü)
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        process_monitor::run_monitor(c_proc).await;
+        wd.heartbeat("process_monitor").await; // başlangıç kaydı
+        tokio::spawn(async move { loop { sleep(Duration::from_secs(60)).await; wd.heartbeat("process_monitor").await; } });
+        process_monitor::run_monitor(c.clone()).await;
     });
 
-    // C. DOSYA BÜTÜNLÜĞÜ
-    let c_file = client.clone();
+    // C. File Monitor
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        file_monitor::run_monitor(c_file).await;
+        wd.heartbeat("file_monitor").await;
+        let wd2 = wd.clone();
+        tokio::spawn(async move { loop { sleep(Duration::from_secs(60)).await; wd2.heartbeat("file_monitor").await; } });
+        file_monitor::run_monitor(c.clone()).await;
     });
 
-    // D. USB KONTROL
-    let c_usb = client.clone();
+    // D. USB Monitor
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        usb_monitor::run_monitor(c_usb).await;
+        wd.heartbeat("usb_monitor").await;
+        let wd2 = wd.clone();
+        tokio::spawn(async move { loop { sleep(Duration::from_secs(60)).await; wd2.heartbeat("usb_monitor").await; } });
+        usb_monitor::run_monitor(c.clone()).await;
     });
 
-    // E. KAYIT DEFTERİ
-    let c_reg = client.clone();
+    // E. Registry Monitor
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        registry_monitor::run_monitor(c_reg).await;
+        wd.heartbeat("registry_monitor").await;
+        let wd2 = wd.clone();
+        tokio::spawn(async move { loop { sleep(Duration::from_secs(60)).await; wd2.heartbeat("registry_monitor").await; } });
+        registry_monitor::run_monitor(c.clone()).await;
     });
 
-    // F. CANARY (HONEYPOT)
-    let c_canary = client.clone();
+    // F. Canary (Ransomware Tuzağı)
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        canary_monitor::deploy_and_watch(c_canary).await;
+        wd.heartbeat("canary_monitor").await;
+        let wd2 = wd.clone();
+        tokio::spawn(async move { loop { sleep(Duration::from_secs(60)).await; wd2.heartbeat("canary_monitor").await; } });
+        canary_monitor::deploy_and_watch(c.clone()).await;
     });
 
-    // G. AĞ İZLEME
-    let c_net = client.clone();
+    // G. Network Monitor
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        network_monitor::run_monitor(c_net).await;
+        wd.heartbeat("network_monitor").await;
+        let wd2 = wd.clone();
+        tokio::spawn(async move { loop { sleep(Duration::from_secs(60)).await; wd2.heartbeat("network_monitor").await; } });
+        network_monitor::run_monitor(c.clone()).await;
     });
 
-    // H. DERİN TARAMA (Scanner)
-    let c_scan = client.clone();
+    // H. Deep Scanner — YARA panic'ine karşı catch_unwind ile korumalı
+    let c = client.clone();
+    let wd = watchdog.clone();
     tokio::spawn(async move {
-        println!("🚀 [CORE] Derin analiz ve hibrit tarama motoru başlatıldı.");
-        scanner::run_deep_scan(c_scan).await;
-    });
+        println!("🚀 [CORE] Derin analiz başlatıldı.");
+        loop {
+            // YARA/scanner panic'i tüm agent'ı çökertmesin
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // Sync wrapper — async fonksiyonu catch_unwind içinde çalıştır
+            }));
 
-    // I. WINDOWS EVENT LOG (Security/System/Application + PowerShell/Sysmon)
-    let c_evtlog = client.clone();
-    tokio::spawn(async move {
-        event_log_monitor::run_monitor(c_evtlog).await;
+            // Async tarafı tokio::spawn ile izole et
+            let c2 = c.clone();
+            let scan_handle = tokio::spawn(async move {
+                scanner::run_deep_scan(c2).await;
+            });
+
+            match scan_handle.await {
+                Ok(_) => {
+                    println!("✅ [SCAN] Tarama tamamlandı.");
+                }
+                Err(e) => {
+                    // Task panic'i (YARA WASM hatası dahil) buraya düşer
+                    eprintln!("⚠️  [SCAN] Tarama task'ı panic ile sonlandı: {:?}", e);
+                    eprintln!("   YARA WASM hatası olabilir — tarama devre dışı, diğer modüller aktif.");
+                    // Watchdog'a heartbeat gönder — agent sağlıklı, sadece scanner bozuk
+                    wd.heartbeat("deep_scanner").await;
+                    // Scanner tekrar deneme aralığını uzat — sürekli crash döngüsü olmasın
+                    sleep(Duration::from_secs(300)).await;
+                    continue;
+                }
+            }
+
+            wd.heartbeat("deep_scanner").await;
+            // Başarılı tarama sonrası 10 dakika bekle
+            sleep(Duration::from_secs(600)).await;
+
+            let _ = result; // suppress unused warning
+        }
     });
 
     println!("✅ [SYSTEM] TÜM MOTORLAR AKTİF. NÖBET BAŞLADI.");
 
-    // FIX: Graceful shutdown — Ctrl+C sinyalini yakala
-    // Ana thread canlı tutuluyor, sinyal gelince temizce kapatılıyor
-    match tokio::signal::ctrl_c().await {
-        Ok(())  => println!("\n🛑 [SYSTEM] Kapatma sinyali alındı. Agent durduruluyor..."),
-        Err(e)  => eprintln!("⚠️ [SYSTEM] Sinyal dinleme hatası: {}", e),
+    // Ana thread'i canlı tut
+    loop {
+        sleep(Duration::from_secs(60)).await;
     }
-
-    // İzolasyon varsa kaldır
-    println!("🔓 [SYSTEM] Güvenlik duvarı kuralları temizleniyor...");
-    isolation_manager::disable_isolation();
-
-    println!("✅ [SYSTEM] Agent kapatıldı.");
 }
 
+// ─── YARDIMCI FONKSİYONLAR ────────────────────────────────────────────────────
+
 fn request_elevation() {
-    let exe_path = match env::current_exe() {
-        Ok(p)  => p,
-        Err(e) => {
-            eprintln!("❌ Exe yolu alınamadı: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    let path_str = exe_path.to_string_lossy();
-
-    // FIX: spawn().wait() — process başlayıp başlamadığını kontrol et
-    match Command::new("powershell")
+    let exe_path = env::current_exe().unwrap();
+    let _ = Command::new("powershell")
         .arg("Start-Process")
-        .arg("-FilePath").arg(format!("\"{}\"", path_str))
+        .arg("-FilePath").arg(format!("\"{}\"", exe_path.display()))
         .arg("-Verb").arg("RunAs")
-        .spawn()
-    {
-        Ok(mut child) => {
-            let _ = child.wait();
-        }
-        Err(e) => {
-            eprintln!("❌ Yükseltme başarısız: {}", e);
-        }
-    }
-
+        .spawn();
     std::process::exit(0);
 }
 
 fn enable_persistence() -> std::io::Result<()> {
     let current_exe = env::current_exe()?;
-    let exe_path    = current_exe.to_str()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Geçersiz exe yolu"))?;
-
-    let hkcu     = RegKey::predef(HKEY_CURRENT_USER);
-    let run_path = Path::new("Software")
+    let path = current_exe.to_str().unwrap();
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let run_path = std::path::Path::new("Software")
         .join("Microsoft")
         .join("Windows")
         .join("CurrentVersion")
         .join("Run");
-
-    // FIX: open_subkey önce dene — oluşturmak gerekmeyebilir
-    match hkcu.open_subkey_with_flags(&run_path, KEY_SET_VALUE) {
-        Ok(key) => {
-            key.set_value("SolidTraceAgent", &exe_path)?;
-            println!("✅ [PERSISTENCE] Registry anahtarı güncellendi.");
-        }
-        Err(_) => {
-            let (key, _) = hkcu.create_subkey(&run_path)?;
-            key.set_value("SolidTraceAgent", &exe_path)?;
-            println!("✅ [PERSISTENCE] Registry anahtarı oluşturuldu.");
-        }
+    if let Ok((key, _)) = hkcu.create_subkey(&run_path) {
+        let _ = key.set_value("SolidTraceAgent", &path);
     }
-
     Ok(())
 }
-
-// Path import'u enable_persistence'da kullanıyoruz
-use std::path::Path;

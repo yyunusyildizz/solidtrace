@@ -1,94 +1,64 @@
-// usb_monitor.rs - v2.0 (REVISED)
-// Düzeltmeler:
-//   - Manuel JSON parse (extract_value) kırılgan — serde_json ile değiştirildi
-//   - PowerShell başarısız olursa Err(_) → Vec::new() sessizce geçiyor, hata loglanmıyor
-//   - Cihaz çıkarma bildirimi sadece println, API'ye gönderilmiyor — düzeltildi
-//   - Çok büyük USB (>2TB) hesabı u64 overflow yapabilirdi — düzeltildi
-//   - Interval env ile yapılandırılabilir hale getirildi
-
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use std::process::Command;
-use serde::Deserialize;
 use crate::api_client::ApiClient;
 
-#[derive(Debug, PartialEq, Clone, Deserialize)]
+#[derive(Debug, PartialEq, Clone)]
 struct UsbDevice {
-    #[serde(rename = "Model")]
-    model: String,
-    #[serde(rename = "SerialNumber")]
-    serial: Option<String>, // FIX: Bazı cihazlarda serial null gelebilir
-    #[serde(rename = "Size")]
-    size: Option<u64>, // FIX: Option — null gelen size'ı handle et
-}
-
-impl UsbDevice {
-    fn serial_str(&self) -> String {
-        self.serial.clone().unwrap_or_else(|| "Bilinmiyor".to_string())
-    }
-
-    fn size_str(&self) -> String {
-        match self.size {
-            Some(bytes) if bytes > 0 => {
-                // FIX: checked_div ile overflow koruması
-                let gb = bytes / 1_073_741_824;
-                format!("{} GB", gb)
-            }
-            _ => "Bilinmiyor".to_string(),
-        }
-    }
+    name: String,
+    device_id: String,
 }
 
 pub async fn run_monitor(client: Arc<ApiClient>) {
-    println!("🛡️ [USB MONITOR] WMI (Enterprise Mode) Aktif...");
-
-    let interval_secs = std::env::var("USB_POLL_INTERVAL")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5);
+    println!("🛡️ [USB MONITOR] Aktif (Win32_PnPEntity modu)...");
 
     let mut known_devices = get_usb_devices();
     println!("ℹ️  [USB] Başlangıçta {} cihaz takılı.", known_devices.len());
 
     loop {
-        sleep(Duration::from_secs(interval_secs)).await;
+        sleep(Duration::from_secs(5)).await;
 
         let current_devices = get_usb_devices();
 
-        // 1. YENİ CİHAZ
+        // Yeni takılan cihazlar
         for device in &current_devices {
             if !known_devices.contains(device) {
-                let msg = format!(
-                    "USB TESPİT EDİLDİ: {} | Boyut: {} | Seri: {}",
-                    device.model, device.size_str(), device.serial_str()
-                );
+                let msg = format!("🔌 USB CİHAZ TAKILDI: {}", device.name);
                 println!("🚨 [USB] {}", msg);
+                println!("   DeviceID: {}", device.device_id);
 
-                let c      = client.clone();
-                let m      = msg.clone();
-                let serial = Some(device.serial_str());
-                let pid    = std::process::id();
-
+                let c = client.clone();
+                let m = msg.clone();
+                let serial = Some(device.device_id.clone());
                 tokio::spawn(async move {
-                    let _ = c.send_event("USB_DEVICE_DETECTED", &m, "HIGH", pid, serial).await;
+                    let _ = c.send_event(
+                        "USB_DEVICE_DETECTED",
+                        &m,
+                        "HIGH",
+                        std::process::id(),
+                        serial,
+                    ).await;
                 });
             }
         }
 
-        // 2. ÇIKARILAN CİHAZ — FIX: artık API'ye de bildiriliyor
+        // Çıkarılan cihazlar
         for device in &known_devices {
             if !current_devices.contains(device) {
-                let msg = format!(
-                    "USB ÇIKARILDI: {} | Seri: {}", device.model, device.serial_str()
-                );
+                let msg = format!("🔌 USB CİHAZ ÇIKARILDI: {}", device.name);
                 println!("ℹ️  [USB] {}", msg);
 
-                let c   = client.clone();
-                let m   = msg.clone();
-                let pid = std::process::id();
+                let c = client.clone();
+                let m = msg.clone();
                 tokio::spawn(async move {
-                    let _ = c.send_event("USB_DEVICE_REMOVED", &m, "INFO", pid, None).await;
+                    let _ = c.send_event(
+                        "USB_DEVICE_REMOVED",
+                        &m,
+                        "WARNING",
+                        std::process::id(),
+                        None,
+                    ).await;
                 });
             }
         }
@@ -97,50 +67,111 @@ pub async fn run_monitor(client: Arc<ApiClient>) {
     }
 }
 
-/// PowerShell + WMI ile USB cihaz listesi al
+/// Win32_PnPEntity — DiskDrive yerine tüm USB cihazlarını yakalar
+/// (flash drive, mouse, keyboard, hub dahil)
 fn get_usb_devices() -> Vec<UsbDevice> {
-    let ps_cmd = r#"
-        $devices = Get-CimInstance Win32_DiskDrive |
-            Where-Object { $_.InterfaceType -eq 'USB' } |
-            Select-Object Model, SerialNumber, Size
-        if ($devices -eq $null) { '[]' }
-        elseif ($devices -is [array]) { $devices | ConvertTo-Json }
-        else { @($devices) | ConvertTo-Json }
-    "#;
+    // ÇÖZÜM 1: r"..." (Raw String) eklendi ve boşluklar temizlendi.
+    let ps_cmd = r"$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); Get-PnpDevice | Where-Object { $_.InstanceId -like 'USB\*' -and $_.Status -eq 'OK' } | Select-Object FriendlyName, InstanceId | ConvertTo-Json -Compress";
 
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-Command", ps_cmd])
+        .args(&[
+            "-NoProfile",
+            "-NonInteractive",
+            // ÇÖZÜM 2: "-OutputEncoding", "UTF8" satırı silindi çünkü powershell.exe bunu desteklemez.
+            "-Command", ps_cmd,
+        ])
         .output();
 
     match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
-
-            if stdout.is_empty() || stdout == "[]" {
+        Ok(o) if o.status.success() => {
+            // Windows-1252 → UTF8 dönüşümü için lossy kullan
+            let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+            let trimmed = stdout.trim();
+            if trimmed.is_empty() || trimmed == "null" {
                 return Vec::new();
             }
+            parse_pnp_json(trimmed)
+        }
+        _ => Vec::new(),
+    }
+}
 
-            // FIX: serde_json ile doğru parse — manuel extract_value kaldırıldı
-            // Array veya tek obje her ikisini de handle et
-            if stdout.starts_with('[') {
-                serde_json::from_str::<Vec<UsbDevice>>(&stdout)
-                    .unwrap_or_else(|e| {
-                        eprintln!("⚠️ [USB] JSON parse hatası (array): {}", e);
-                        Vec::new()
-                    })
-            } else {
-                serde_json::from_str::<UsbDevice>(&stdout)
-                    .map(|d| vec![d])
-                    .unwrap_or_else(|e| {
-                        eprintln!("⚠️ [USB] JSON parse hatası (object): {}", e);
-                        Vec::new()
-                    })
+fn parse_pnp_json(json: &str) -> Vec<UsbDevice> {
+    let mut devices = Vec::new();
+
+    // Tek obje veya dizi kontrolü
+    let is_array = json.trim_start().starts_with('[');
+
+    if is_array {
+        // Manuel split — serde bağımlılığı olmadan
+        // Her { ... } bloğunu ayrı ayrı parse et
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        let chars: Vec<char> = json.chars().collect();
+
+        for (i, &c) in chars.iter().enumerate() {
+            match c {
+                '{' => {
+                    if depth == 0 { start = i; }
+                    depth += 1;
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let block: String = chars[start..=i].iter().collect();
+                        if let Some(dev) = parse_single_entry(&block) {
+                            devices.push(dev);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        Err(e) => {
-            // FIX: Hata loglanıyor — sessizce boş dönmüyor
-            eprintln!("⚠️ [USB] PowerShell çalıştırılamadı: {}", e);
-            Vec::new()
+    } else {
+        if let Some(dev) = parse_single_entry(json) {
+            devices.push(dev);
         }
     }
+
+    devices
+}
+
+fn parse_single_entry(block: &str) -> Option<UsbDevice> {
+    let name = extract_json_str(block, "FriendlyName");
+    let device_id = extract_json_str(block, "InstanceId");
+
+    // Boş veya null değerleri filtrele
+    if name.is_empty() || name == "null" {
+        return None;
+    }
+
+    // Sadece gerçek USB depolama cihazlarını değil, tüm USB cihazları logla
+    // Ama çok gürültülü temel bileşenleri filtrele
+    let name_lower = name.to_lowercase();
+    let skip_keywords = ["root hub", "composite device", "generic hub"];
+    if skip_keywords.iter().any(|k| name_lower.contains(k)) {
+        return None;
+    }
+
+    Some(UsbDevice { name, device_id })
+}
+
+fn extract_json_str(json: &str, key: &str) -> String {
+    let search = format!("\"{}\":", key);
+    if let Some(pos) = json.find(&search) {
+        let rest = &json[pos + search.len()..].trim_start_matches(' ');
+        if rest.starts_with('"') {
+            // String değer
+            if let Some(end) = rest[1..].find('"') {
+                return rest[1..end + 1].to_string();
+            }
+        } else if rest.starts_with("null") {
+            return "null".to_string();
+        } else {
+            // Sayısal veya boolean
+            let end = rest.find(|c: char| c == ',' || c == '}').unwrap_or(rest.len());
+            return rest[..end].trim().to_string();
+        }
+    }
+    String::new()
 }

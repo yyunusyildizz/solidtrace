@@ -1,11 +1,12 @@
-// canary_monitor.rs - v2.0 (REVISED)
+// canary_monitor.rs - v3.0 (REVISED - INFINITE LOOP FIXED)
 // Düzeltmeler:
 //   - CANARY_DIR hardcoded → env değişkeninden alınıyor
 //   - Sadece passwords.txt izleniyor → birden fazla tuzak dosyası desteği
 //   - thread::sleep → tokio::time::sleep (async bağlam uyumu)
-//   - Self-healing'de dosya yoksa oluşturuluyor ama varsa üzerine yazılıyor — düzeltildi
 //   - EventKind::Access sadece okuma diye alarm verilmiyor AMA bazı ransomware önce okur
 //     → Erişim sayacı eklendi, kısa sürede çok fazla Access varsa alarm üret
+//   - KRİTİK DÜZELTME: Modify eventinde dosyanın yeniden yazılması (Infinite Loop) engellendi.
+//     Self-healing SADECE dosya tamamen silindiğinde (Remove) çalışacak.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -47,7 +48,6 @@ pub async fn deploy_and_watch(client: Arc<ApiClient>) {
     setup_honeypot(&dir);
 
     // FIX: notify → tokio mpsc ile async uyumlu hale getirildi
-    // std::sync::mpsc yerine tokio::sync::mpsc kullanılıyor
     let (tx, mut rx) = mpsc::channel(50);
 
     let mut watcher = match RecommendedWatcher::new(
@@ -122,34 +122,44 @@ pub async fn deploy_and_watch(client: Arc<ApiClient>) {
                         }
                     }
 
-                    // Değiştirme, silme, yeniden adlandırma → KRİTİK
-                    _ => {
-                        let kind_str = format!("{:?}", event.kind);
-                        println!("🔥 [RANSOMWARE] KRİTİK HONEYPOT MÜDAHALESİ! ({}) → {}", kind_str, file_name);
+                    // KRİTİK FIX: Sadece Remove (Silme) durumunda Self-Healing çalışır
+                    EventKind::Remove(_) => {
+                        println!("🔥 [RANSOMWARE] KRİTİK! Tuzak dosya SİLİNDİ → {}", file_name);
 
-                        let details = format!(
-                            "Honeypot aktivitesi: {} | Dosya: {} | Tür: {}",
-                            dir, file_name, kind_str
-                        );
-
+                        let details = format!("Honeypot SİLİNDİ: {} | Dosya: {}", dir, file_name);
                         let c = client.clone();
                         let d = details.clone();
                         let pid = std::process::id();
+                        
                         tokio::spawn(async move {
-                            let _ = c.send_event(
-                                "RANSOMWARE_ACTIVITY", &d, "CRITICAL", pid, None
-                            ).await;
+                            let _ = c.send_event("RANSOMWARE_ACTIVITY", &d, "CRITICAL", pid, None).await;
                         });
 
-                        // FIX: Self-healing — async sleep ile (thread::sleep yoktu zaten async bağlamda)
-                        // FIX: Dosya varsa üzerine yazılmıyordu orijinalde — şimdi her zaman yenile
+                        // Self-healing sadece dosya yok olduğunda (Remove) devreye girer
                         let dir_clone = dir.clone();
                         tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            tokio::time::sleep(Duration::from_secs(2)).await;
                             setup_honeypot(&dir_clone);
-                            println!("✨ [SELF-HEALING] Tuzak dosyaları yenilendi.");
+                            println!("✨ [SELF-HEALING] Eksik tuzak dosyaları yenilendi.");
                         });
                     }
+
+                    // Modify (Değiştirme) durumunda SADECE ALARM verilir, dosya yenilenmez (Sonsuz döngüyü önler)
+                    EventKind::Modify(_) => {
+                        println!("🔥 [RANSOMWARE] KRİTİK! Tuzak dosya DEĞİŞTİRİLDİ → {}", file_name);
+
+                        let details = format!("Honeypot DEĞİŞTİRİLDİ: {} | Dosya: {}", dir, file_name);
+                        let c = client.clone();
+                        let d = details.clone();
+                        let pid = std::process::id();
+
+                        tokio::spawn(async move {
+                            let _ = c.send_event("RANSOMWARE_ACTIVITY", &d, "CRITICAL", pid, None).await;
+                        });
+                        // DİKKAT: Burada setup_honeypot() çağrılmaz!
+                    }
+
+                    _ => {} // Diğer önemsiz eventleri yoksay
                 }
             }
             Err(e) => eprintln!("⚠️ [CANARY] İzleme hatası: {:?}", e),
@@ -161,14 +171,17 @@ fn setup_honeypot(dir: &str) {
     let _ = fs::create_dir_all(dir);
 
     for (path, content) in canary_files(dir) {
-        // FIX: Dosya var olsa bile yenile (self-healing tam çalışsın)
-        match File::create(&path) {
-            Ok(mut f) => {
-                let _ = f.write_all(content);
+        // Dosya zaten varsa dokunma, yoksa oluştur. 
+        // Bu, Modify eventini gereksiz yere tetiklemememizi sağlar.
+        if !path.exists() {
+            match File::create(&path) {
+                Ok(mut f) => {
+                    let _ = f.write_all(content);
+                }
+                Err(e) => eprintln!("⚠️ [CANARY] Dosya oluşturulamadı {:?}: {}", path, e),
             }
-            Err(e) => eprintln!("⚠️ [CANARY] Dosya oluşturulamadı {:?}: {}", path, e),
         }
     }
 
-    println!("🔨 [CANARY] {} tuzak dosyası hazır.", canary_files(dir).len());
+    println!("🔨 [CANARY] {} tuzak dosyası hazır/kontrol edildi.", canary_files(dir).len());
 }
