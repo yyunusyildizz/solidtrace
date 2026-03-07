@@ -6,39 +6,79 @@
 ![Next.js](https://img.shields.io/badge/Frontend-Next.js-black.svg)
 ![AI](https://img.shields.io/badge/AI-Groq_Powered-purple.svg)
 
-SolidTrace, uç noktaları (endpoint) gerçek zamanlı olarak izleyen, gelişmiş tehditleri yapay zeka (AI) ve küresel siber istihbarat kurallarıyla tespit eden kurumsal düzeyde bir **EDR (Endpoint Detection and Response)** ve **SOC (Security Operations Center)** platformudur.
+SolidTrace; endpoint telemetrisi toplayan, güvenlik olaylarını korele eden ve SOC ekipleri için canlı görünürlük sağlayan bir **EDR + SOC platformudur**.
 
 ## 🌟 Öne Çıkan Özellikler
 
-* **🦀 Rust Tabanlı Ultra Hızlı Agent:** Düşük CPU/RAM tüketimi ile süreç, ağ, dosya (FIM), USB ve Registry izleme.
-* **🧠 Yapay Zeka Destekli Analiz (Groq AI):** Tespit edilen alarmların Groq AI ile otomatik incelenmesi ve SOC analistlerine Türkçe/İngilizce çözüm önerileri sunulması.
-* **🎯 SIGMA & YARA Motorları:** Dünyaca kabul görmüş SIGMA kuralları ile davranışsal analiz ve YARA ile bellek/dosya tabanlı zararlı yazılım tespiti.
-* **👤 UEBA (Kullanıcı Davranış Analizi):** Makine öğrenmesi algoritmaları ile normal kullanıcı davranışlarından sapmaların (anormalliklerin) anında tespiti.
-* **🕸️ Honeypot (Canary):** Fidye yazılımlarını (Ransomware) anında tespit edip izole etmek için tuzak dosyalar.
-* **⚡ Gerçek Zamanlı Dashboard:** WebSockets üzerinden milisaniyelik gecikmeyle akan SOC ekranı (Next.js).
+- **Rust Agent:** Süreç, ağ, dosya (FIM), USB ve registry izleme.
+- **FastAPI Backend:** Alarm toplama, korelasyon, Sigma ve UEBA işleme.
+- **Next.js Frontend:** Canlı SOC paneli ve operasyon ekranları.
+- **Threat Intel / AI Entegrasyonu:** OTX + Groq tabanlı analiz akışları.
 
-## 🏗️ Mimari
+## 🧱 Mimari
 
-1. **Agent (Rust):** Uç noktalara kurulur, telemetri toplar ve YARA taramaları yapar.
-2. **Backend (Python/FastAPI):** Gelen verileri alır, Korelasyon, SIGMA ve UEBA motorlarından geçirir. Veritabanına (PostgreSQL) yazar.
-3. **Frontend (Next.js):** Güvenlik analistleri için karanlık mod (Dark Mode) destekli, canlı izleme ve raporlama arayüzü.
+1. **Agent (Rust):** Endpoint üzerinde telemetri üretir.
+2. **Backend (FastAPI):** Veriyi işler, alarm üretir, WebSocket ile yayınlar.
+3. **Frontend (Next.js):** Analist ekranında alarm ve metrikleri gösterir.
 
-## 🚀 Kurulum ve Çalıştırma
+## 📁 Proje Yapısı (özet)
 
-### 1. Backend (Python Sunucusu)
+```text
+solidtrace/
+├── agent_rust/         # Endpoint agent
+├── backend/            # FastAPI + detection engines
+├── frontend/           # Next.js SOC UI
+├── ANALIZ_RAPORU.md    # Teknik analiz raporu
+└── docs/               # İyileştirme planları / teknik dokümanlar
+```
+
+## ⚙️ Gereksinimler
+
+- **Python 3.10+**
+- **Node.js 20+**
+- **Rust stable toolchain**
+
+## 🚀 Hızlı Başlangıç
+
+### 1) Backend
+
 ```bash
 cd backend
 python -m venv .venv
-# Windows için: .venv\Scripts\activate
-# Linux/Mac için: source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python api_advanced.py
-2. Frontend (SOC Arayüzü)
-Bash
+cp .env.example .env       # ihtiyaca göre düzenleyin
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### 2) Frontend
+
+```bash
 cd frontend
 npm install
+cp .env.local.example .env.local
 npm run dev
-3. Agent (Rust Kalkanı)
-Bash
-cd agent_rust
+```
+
+### 3) Rust Agent
+
+```bash
+cd agent_rust/src
 cargo run --release
+```
+
+## 🔐 Ortam Değişkenleri
+
+- Backend için örnek dosya: `backend/.env.example`
+- Frontend için örnek dosya: `frontend/.env.local.example`
+
+## 🧭 İleriye Taşıma Planı
+
+`ANALIZ_RAPORU.md` içindeki bulguları aksiyona çevirmek için detaylı plan:
+
+- `docs/ILERI_TASIMA_PLANI.md`
+
+## ⚠️ Notlar
+
+- Bu repo geliştirme aşamasındadır; bazı frontend sayfalarında lint hataları bulunabilir.
+- Üretim kullanımı için kimlik doğrulama/secret yönetimi ve CI kalite kapıları sıkılaştırılmalıdır.
