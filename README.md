@@ -1,44 +1,303 @@
-# 🛡️ SolidTrace EDR & SOC Platform
+# SolidTrace SOC Platform
 
-![Version](https://img.shields.io/badge/Version-6.1-blue.svg)
-![Rust](https://img.shields.io/badge/Agent-Rust-orange.svg)
-![Python](https://img.shields.io/badge/Backend-FastAPI-green.svg)
-![Next.js](https://img.shields.io/badge/Frontend-Next.js-black.svg)
-![AI](https://img.shields.io/badge/AI-Groq_Powered-purple.svg)
+SolidTrace is a next‑generation **Security Operations Center (SOC)
+platform** designed for endpoint telemetry collection, threat detection,
+and behavioral analytics.
 
-SolidTrace, uç noktaları (endpoint) gerçek zamanlı olarak izleyen, gelişmiş tehditleri yapay zeka (AI) ve küresel siber istihbarat kurallarıyla tespit eden kurumsal düzeyde bir **EDR (Endpoint Detection and Response)** ve **SOC (Security Operations Center)** platformudur.
+The platform combines **endpoint agents**, **detection engines**, and a
+**SOC dashboard** to provide advanced threat visibility.
 
-## 🌟 Öne Çıkan Özellikler
+------------------------------------------------------------------------
 
-* **🦀 Rust Tabanlı Ultra Hızlı Agent:** Düşük CPU/RAM tüketimi ile süreç, ağ, dosya (FIM), USB ve Registry izleme.
-* **🧠 Yapay Zeka Destekli Analiz (Groq AI):** Tespit edilen alarmların Groq AI ile otomatik incelenmesi ve SOC analistlerine Türkçe/İngilizce çözüm önerileri sunulması.
-* **🎯 SIGMA & YARA Motorları:** Dünyaca kabul görmüş SIGMA kuralları ile davranışsal analiz ve YARA ile bellek/dosya tabanlı zararlı yazılım tespiti.
-* **👤 UEBA (Kullanıcı Davranış Analizi):** Makine öğrenmesi algoritmaları ile normal kullanıcı davranışlarından sapmaların (anormalliklerin) anında tespiti.
-* **🕸️ Honeypot (Canary):** Fidye yazılımlarını (Ransomware) anında tespit edip izole etmek için tuzak dosyalar.
-* **⚡ Gerçek Zamanlı Dashboard:** WebSockets üzerinden milisaniyelik gecikmeyle akan SOC ekranı (Next.js).
+# Architecture
 
-## 🏗️ Mimari
+    Endpoint Agent
+         ↓
+    Signed API
+         ↓
+    Detection Queue
+         ↓
+    Detection Engines
+         ↓
+    Alerts
+         ↓
+    SOC Dashboard
 
-1. **Agent (Rust):** Uç noktalara kurulur, telemetri toplar ve YARA taramaları yapar.
-2. **Backend (Python/FastAPI):** Gelen verileri alır, Korelasyon, SIGMA ve UEBA motorlarından geçirir. Veritabanına (PostgreSQL) yazar.
-3. **Frontend (Next.js):** Güvenlik analistleri için karanlık mod (Dark Mode) destekli, canlı izleme ve raporlama arayüzü.
+### Technology Stack
 
-## 🚀 Kurulum ve Çalıştırma
+Backend - FastAPI - Python - WebSockets
 
-### 1. Backend (Python Sunucusu)
-```bash
-cd backend
-python -m venv .venv
-# Windows için: .venv\Scripts\activate
-# Linux/Mac için: source .venv/bin/activate
-pip install -r requirements.txt
-python api_advanced.py
-2. Frontend (SOC Arayüzü)
-Bash
-cd frontend
-npm install
-npm run dev
-3. Agent (Rust Kalkanı)
-Bash
-cd agent_rust
-cargo run --release
+Frontend - Next.js - React - TailwindCSS
+
+Database - PostgreSQL
+
+Detection Engines - Sigma detection engine - Correlation engine - UEBA
+behavioral analytics
+
+------------------------------------------------------------------------
+
+# Core Features
+
+## Agent Security
+
+SolidTrace agents communicate with the backend using **cryptographically
+signed requests**.
+
+Security protections:
+
+-   HMAC‑SHA256 request signatures
+-   Nonce replay protection
+-   Timestamp validation
+-   Encrypted agent secrets
+-   Agent revoke lifecycle
+
+Agent headers:
+
+    X-Agent-Id
+    X-Agent-Timestamp
+    X-Agent-Nonce
+    X-Agent-Signature
+
+These protections prevent:
+
+-   replay attacks
+-   request tampering
+-   agent impersonation
+
+------------------------------------------------------------------------
+
+# Detection Pipeline
+
+Telemetry processing pipeline:
+
+    Agent
+       ↓
+    Signed API
+       ↓
+    Detection Queue
+       ↓
+    Queue Worker
+       ↓
+    Sigma Engine
+       ↓
+    Correlation Engine
+       ↓
+    UEBA Engine
+       ↓
+    Alerts
+
+The queue architecture ensures the ingestion API remains responsive even
+under heavy load.
+
+------------------------------------------------------------------------
+
+# Detection Engines
+
+## Sigma Engine
+
+Detects known attacker techniques.
+
+Example detections:
+
+-   Mimikatz execution
+-   PowerShell download cradle
+-   WMIC remote command execution
+
+------------------------------------------------------------------------
+
+## Correlation Engine
+
+Detects behavioral attack chains.
+
+Example detection:
+
+    PROCESS_ANOMALY_STORM
+
+Triggered when multiple suspicious processes occur within a short time
+window.
+
+------------------------------------------------------------------------
+
+## UEBA Engine
+
+User and Entity Behavior Analytics.
+
+Tracks:
+
+-   user process patterns
+-   anomaly frequency
+-   behavioral deviation
+
+------------------------------------------------------------------------
+
+# Agent Lifecycle
+
+1.  Enrollment token generated
+2.  Agent registers
+3.  Agent receives credentials
+4.  Agent sends telemetry
+
+Endpoints:
+
+    POST /api/agents/enrollment-token
+    POST /api/agents/register
+    POST /api/v1/agent/heartbeat
+    POST /api/v1/ingest
+    POST /api/agents/{agent_id}/revoke
+
+------------------------------------------------------------------------
+
+# Queue Architecture
+
+Events are processed asynchronously.
+
+Queue table:
+
+    detection_queue
+
+Worker processes events and sends them to detection engines.
+
+Benefits:
+
+-   scalable ingestion
+-   prevents API overload
+-   supports distributed workers
+
+------------------------------------------------------------------------
+
+# Automated Test Scripts
+
+### agent_signed_test.py
+
+Validates:
+
+-   signed heartbeat
+-   signed ingest
+-   replay protection
+
+### solidtrace_queue_alert_test.py
+
+End‑to‑end validation:
+
+-   admin login
+-   agent enrollment
+-   agent registration
+-   signed heartbeat
+-   signed ingest
+-   alert generation
+-   agent revoke lifecycle
+
+------------------------------------------------------------------------
+
+# Current System Status
+
+Validated working components:
+
+    Admin auth ✔
+    Agent enrollment ✔
+    Agent registration ✔
+    Signed heartbeat ✔
+    Signed ingest ✔
+    Detection queue ✔
+    Alert generation ✔
+    Replay protection ✔
+    Agent revoke ✔
+
+System state: **Operational prototype**
+
+------------------------------------------------------------------------
+
+# Development Roadmap
+
+### Sprint 1
+
+Dashboard authentication stabilization
+
+### Sprint 2
+
+Agent online/offline visibility
+
+### Sprint 3
+
+Asset inventory
+
+### Sprint 4
+
+Alert enrichment
+
+### Sprint 5
+
+Advanced correlation detection
+
+### Sprint 6
+
+SOC case management
+
+### Sprint 7
+
+Multi‑tenant hardening
+
+------------------------------------------------------------------------
+
+# Development
+
+Clone repository
+
+    git clone https://github.com/YOUR_USERNAME/solidtrace.git
+
+Backend
+
+    cd backend
+    pip install -r requirements.txt
+    uvicorn app.main:app --reload
+
+Frontend
+
+    cd frontend
+    npm install
+    npm run dev
+
+------------------------------------------------------------------------
+
+# Environment Variables
+
+Required variables:
+
+    DATABASE_URL
+    JWT_SECRET_KEY
+    AGENT_SECRET_KEK
+    ACCESS_TOKEN_EXPIRE_MINUTES
+    REFRESH_TOKEN_EXPIRE_DAYS
+
+------------------------------------------------------------------------
+
+# Security Model
+
+SolidTrace follows **security‑first architecture principles**:
+
+-   signed agent communication
+-   encrypted secrets
+-   replay protection
+-   strict token lifecycle
+-   audit logging
+
+------------------------------------------------------------------------
+
+# Project Context
+
+Development context is documented in:
+
+    PROJECT_CONTEXT.md
+
+This file contains:
+
+-   architecture overview
+-   completed milestones
+-   roadmap
+-   security model
+
+------------------------------------------------------------------------
+
+# License
+
+MIT License
