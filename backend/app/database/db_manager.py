@@ -3,47 +3,47 @@ app.database.db_manager
 =======================
 Veritabanı katmanı — tek sorumluluk:
   - SQLAlchemy engine ve session factory
-  - ORM modelleri (tüm tablolar)
+  - ORM modelleri
+  - backfill_security_columns() — SQLite migration
   - write_audit() yardımcı fonksiyonu
-  - create_default_user() başlangıç seed'i
-
-Hiçbir FastAPI endpoint'i veya iş mantığı içermez.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
-import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
+    Column,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
     create_engine,
-    Column, String, Integer, Text, Boolean,
-    desc, or_, func,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 logger = logging.getLogger("SolidTrace.DB")
 
-# ---------------------------------------------------------------------------
-# 1. BAĞLANTI
-# ---------------------------------------------------------------------------
-
-DATABASE_URL: str = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./solidtrace.db"          # geliştirme ortamı için SQLite fallback
-)
+DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./solidtrace.db")
 
 try:
     engine = create_engine(
         DATABASE_URL,
-        # SQLite için connect_args gerekli, PostgreSQL için pool ayarları
-        **({"connect_args": {"check_same_thread": False}}
-           if DATABASE_URL.startswith("sqlite") else
-           {"pool_size": 20, "max_overflow": 10,
-            "pool_pre_ping": True, "pool_recycle": 3600}),
+        **(
+            {"connect_args": {"check_same_thread": False}}
+            if DATABASE_URL.startswith("sqlite")
+            else {
+                "pool_size": 20,
+                "max_overflow": 10,
+                "pool_pre_ping": True,
+                "pool_recycle": 3600,
+            }
+        ),
     )
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     logger.info("✅ Veritabanı bağlantısı kuruldu.")
@@ -51,34 +51,20 @@ except Exception as exc:
     logger.critical(f"❌ VERİTABANI HATASI: {exc}")
     raise
 
-
-# ---------------------------------------------------------------------------
-# 2. BASE
-# ---------------------------------------------------------------------------
-
 Base = declarative_base()
 
 
-# ---------------------------------------------------------------------------
-# 3. ORM MODELLERİ
-# ---------------------------------------------------------------------------
-
 class TenantModel(Base):
-    """
-    Her müşteri = 1 tenant.
-    MSSP senaryosunda her müşteriye ayrı tenant_id verilir.
-    Veriler DB'de karışmaz.
-    """
     __tablename__ = "tenants"
 
-    id            = Column(String, primary_key=True, index=True)
-    name          = Column(String, nullable=False)           # "ABC Şirketi"
-    slug          = Column(String, unique=True, index=True)  # "abc-sirketi"
-    agent_key     = Column(String, unique=True)              # tenant'a özel agent key
-    max_agents    = Column(Integer, default=10)              # lisans limiti
-    is_active     = Column(Boolean, default=True)
-    created_at    = Column(String)
-    plan          = Column(String, default="starter")        # starter/pro/enterprise
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, index=True)
+    agent_key = Column(String, unique=True, nullable=True)
+    max_agents = Column(Integer, default=10)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(String)
+    plan = Column(String, default="starter")
     contact_email = Column(String, nullable=True)
 
     def to_dict(self) -> dict:
@@ -88,38 +74,85 @@ class TenantModel(Base):
 class UserModel(Base):
     __tablename__ = "users"
 
-    id                       = Column(String, primary_key=True, index=True)
-    username                 = Column(String, index=True, nullable=False)
-    hashed_password          = Column(String, nullable=False)
-    role                     = Column(String, default="analyst")   # admin/analyst/viewer
-    email                    = Column(String, nullable=True)
-    tenant_id                = Column(String, index=True, nullable=True)  # None = süper admin
-    created_at               = Column(String)
-    last_login               = Column(String, nullable=True)
-    failed_attempts          = Column(Integer, default=0)
-    locked_until             = Column(String, nullable=True)
+    id = Column(String, primary_key=True, index=True)
+    username = Column(String, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(String, default="analyst")
+    email = Column(String, nullable=True)
+    tenant_id = Column(String, index=True, nullable=True)
+
+    created_at = Column(String)
+    last_login = Column(String, nullable=True)
+
+    failed_attempts = Column(Integer, default=0)
+    locked_until = Column(String, nullable=True)
+
     password_change_required = Column(Boolean, default=True)
-    is_active                = Column(Boolean, default=True)
-    totp_secret              = Column(String, nullable=True)   # 2FA secret (base32)
-    totp_enabled             = Column(Boolean, default=False)  # 2FA aktif mi?
+    is_active = Column(Boolean, default=True)
+
+    totp_secret = Column(String, nullable=True)
+    totp_enabled = Column(Boolean, default=False)
+
+    invite_token_hash = Column(String, nullable=True)
+    invite_expires_at = Column(String, nullable=True)
+    must_setup_password = Column(Boolean, default=False)
+    password_changed_at = Column(String, nullable=True)
+    token_version = Column(Integer, default=0)
 
     def to_dict(self) -> dict:
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        safe = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        safe.pop("hashed_password", None)
+        safe.pop("totp_secret", None)
+        safe.pop("invite_token_hash", None)
+        return safe
 
 
 class AuditLogModel(Base):
-    """Her kritik aksiyonu kayıt altına alır — KVKK uyumu için zorunlu."""
     __tablename__ = "audit_log"
 
-    id         = Column(String, primary_key=True, index=True)
-    timestamp  = Column(String, index=True)
-    username   = Column(String, index=True)
-    action     = Column(String)
-    target     = Column(String, nullable=True)
-    detail     = Column(Text, nullable=True)
+    id = Column(String, primary_key=True, index=True)
+    timestamp = Column(String, index=True)
+    username = Column(String, index=True)
+    action = Column(String)
+    target = Column(String, nullable=True)
+    detail = Column(Text, nullable=True)
     ip_address = Column(String, nullable=True)
-    result     = Column(String, default="SUCCESS")
-    tenant_id  = Column(String, index=True, nullable=True)
+    result = Column(String, default="SUCCESS")
+    tenant_id = Column(String, nullable=True)
+
+
+class RefreshTokenModel(Base):
+    __tablename__ = "refresh_tokens"
+
+    id = Column(String, primary_key=True, index=True)
+    username = Column(String, index=True, nullable=False)
+    token_version = Column(Integer, default=0)
+    issued_at = Column(String, nullable=False)
+    expires_at = Column(String, nullable=False)
+    revoked_at = Column(String, nullable=True)
+    replaced_by = Column(String, nullable=True)
+
+
+class AlertModel(Base):
+    __tablename__ = "alerts_production_v2"
+
+    id = Column(String, primary_key=True, index=True)
+    created_at = Column(String, index=True)
+    hostname = Column(String, index=True)
+    username = Column(String, nullable=True)
+    type = Column(String, index=True)
+    risk_score = Column(Integer, default=0)
+    rule = Column(String, nullable=True)
+    severity = Column(String, default="INFO")
+    details = Column(Text, nullable=True)
+    command_line = Column(Text, nullable=True)
+    pid = Column(Integer, nullable=True)
+    serial = Column(String, nullable=True)
+    tenant_id = Column(String, index=True, nullable=True)
+    status = Column(String, default="open")
+    analyst_note = Column(Text, nullable=True)
+    resolved_at = Column(String, nullable=True)
+    resolved_by = Column(String, nullable=True)
 
     def to_dict(self) -> dict:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
@@ -128,58 +161,168 @@ class AuditLogModel(Base):
 class RuleModel(Base):
     __tablename__ = "detection_rules"
 
-    id         = Column(String, primary_key=True, index=True)
-    name       = Column(String, nullable=False)
-    keyword    = Column(String, nullable=False)
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    keyword = Column(String, nullable=False)
     risk_score = Column(Integer, default=50)
-    severity   = Column(String, default="WARNING")
+    severity = Column(String, default="WARNING")
     created_at = Column(String)
     created_by = Column(String, nullable=True)
-    tenant_id  = Column(String, index=True, nullable=True)
 
     def to_dict(self) -> dict:
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
 
 
-class AlertModel(Base):
-    __tablename__ = "alerts_production_v2"
+class DetectionQueueModel(Base):
+    __tablename__ = "detection_queue"
 
-    id           = Column(String, primary_key=True, index=True)
-    created_at   = Column(String, index=True)
-    hostname     = Column(String, index=True)
-    username     = Column(String)
-    type         = Column(String)
-    risk_score   = Column(Integer)
-    rule         = Column(String)
-    severity     = Column(String)
-    details      = Column(Text)
-    command_line = Column(Text)
-    pid          = Column(Integer)
-    serial       = Column(String, nullable=True)
-    tenant_id    = Column(String, index=True, nullable=True)
-    # Alert lifecycle
-    status       = Column(String, default="open")       # open/investigating/resolved/false_positive
-    analyst_note = Column(Text, nullable=True)
-    resolved_at  = Column(String, nullable=True)
-    resolved_by  = Column(String, nullable=True)
+    id = Column(String, primary_key=True, index=True)
+    tenant_id = Column(String, index=True, nullable=True)
+    payload_json = Column(Text, nullable=False)
+    status = Column(String, index=True, default="pending")
+    attempts = Column(Integer, default=0)
+    created_at = Column(String, index=True, nullable=False)
+    available_at = Column(String, index=True, nullable=False)
+    locked_by = Column(String, nullable=True)
+    locked_at = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+
+
+class AgentEnrollmentTokenModel(Base):
+    __tablename__ = "agent_enrollment_tokens"
+
+    id = Column(String, primary_key=True, index=True)
+    tenant_id = Column(String, index=True, nullable=False)
+    token_hash = Column(String, nullable=False, unique=True)
+    created_by = Column(String, nullable=False)
+    created_at = Column(String, nullable=False)
+    expires_at = Column(String, nullable=False)
+    used_at = Column(String, nullable=True)
+    revoked_at = Column(String, nullable=True)
 
     def to_dict(self) -> dict:
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        safe = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        safe.pop("token_hash", None)
+        return safe
 
 
-# ---------------------------------------------------------------------------
-# 4. TABLO OLUŞTURMA
-# ---------------------------------------------------------------------------
+class AgentModel(Base):
+    __tablename__ = "agents"
+
+    id = Column(String, primary_key=True, index=True)
+    tenant_id = Column(String, index=True, nullable=False)
+
+    hostname = Column(String, index=True, nullable=False)
+    device_fingerprint = Column(String, index=True, nullable=False)
+    os_name = Column(String, nullable=True)
+    agent_version = Column(String, nullable=True)
+
+    secret_hash = Column(String, nullable=False)
+    secret_enc = Column(Text, nullable=False)
+
+    enrolled_at = Column(String, nullable=False)
+    last_seen = Column(String, index=True, nullable=True)
+
+    is_active = Column(Boolean, default=True)
+    revoked_at = Column(String, nullable=True)
+
+    secret_rotated_at = Column(String, nullable=True)
+    secret_version = Column(Integer, default=1)
+
+    last_ip = Column(String, nullable=True)
+    last_user = Column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "device_fingerprint", name="uq_agent_tenant_fingerprint"),
+    )
+
+    def to_dict(self) -> dict:
+        safe = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        safe.pop("secret_hash", None)
+        safe.pop("secret_enc", None)
+        return safe
+
+
+class AgentNonceModel(Base):
+    __tablename__ = "agent_nonce_cache"
+
+    id = Column(String, primary_key=True, index=True)
+    agent_id = Column(String, index=True, nullable=False)
+    nonce = Column(String, index=True, nullable=False)
+    created_at = Column(String, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("agent_id", "nonce", name="uq_agent_nonce"),
+    )
+
+
+def backfill_security_columns() -> None:
+    if not DATABASE_URL.startswith("sqlite"):
+        logger.info("PostgreSQL algılandı; güvenlik kolonları için Alembic migration kullanın.")
+        return
+
+    required_user_columns = {
+        "invite_token_hash": "TEXT",
+        "invite_expires_at": "TEXT",
+        "must_setup_password": "BOOLEAN DEFAULT 0",
+        "password_changed_at": "TEXT",
+        "token_version": "INTEGER DEFAULT 0",
+    }
+
+    with engine.begin() as conn:
+        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
+        for name, ddl in required_user_columns.items():
+            if name not in existing:
+                conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+                logger.info(f"users.{name} kolonu eklendi")
+
+        tables = {
+            row[0]
+            for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+        if "agent_nonce_cache" not in tables:
+            conn.exec_driver_sql("""
+            CREATE TABLE agent_nonce_cache (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT,
+                nonce TEXT,
+                created_at TEXT,
+                UNIQUE(agent_id, nonce)
+            )
+            """)
+            logger.info("agent_nonce_cache tablosu oluşturuldu")
+
+        if "agents" in tables:
+            agent_existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(agents)").fetchall()}
+            agent_required = {
+                "secret_enc": "TEXT",
+                "revoked_at": "TEXT",
+                "last_seen": "TEXT",
+                "agent_version": "TEXT",
+                "os_name": "TEXT",
+                "secret_rotated_at": "TEXT",
+                "secret_version": "INTEGER DEFAULT 1",
+                "last_ip": "TEXT",
+                "last_user": "TEXT",
+            }
+            for name, ddl in agent_required.items():
+                if name not in agent_existing:
+                    conn.exec_driver_sql(f"ALTER TABLE agents ADD COLUMN {name} {ddl}")
+                    logger.info(f"agents.{name} kolonu eklendi")
+
 
 def init_db() -> None:
-    """Tüm tabloları oluştur (yoksa). Uygulama başlangıcında çağrılır."""
     Base.metadata.create_all(bind=engine)
+    backfill_security_columns()
     logger.info("✅ Tablolar hazır.")
 
 
-# ---------------------------------------------------------------------------
-# 5. YARDIMCI FONKSİYONLAR
-# ---------------------------------------------------------------------------
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 async def write_audit(
     db: Session,
@@ -191,17 +334,16 @@ async def write_audit(
     result: str = "SUCCESS",
     tenant_id: Optional[str] = None,
 ) -> None:
-    """Audit log kaydı oluştur — tüm kritik aksiyonlardan çağrılır."""
     entry = AuditLogModel(
-        id         = str(uuid.uuid4()),
-        timestamp  = datetime.now().isoformat(),
-        username   = username,
-        action     = action,
-        target     = target,
-        detail     = detail,
-        ip_address = ip,
-        result     = result,
-        tenant_id  = tenant_id,
+        id=str(uuid.uuid4()),
+        timestamp=utcnow_iso(),
+        username=username,
+        action=action,
+        target=target,
+        detail=detail,
+        ip_address=ip,
+        result=result,
+        tenant_id=tenant_id,
     )
     db.add(entry)
     try:
@@ -211,47 +353,7 @@ async def write_audit(
         db.rollback()
 
 
-def create_default_user() -> None:
-    """
-    Başlangıçta varsayılan admin oluştur.
-    ⚠️  Üretimde şifreyi mutlaka değiştirin!
-    """
-    from passlib.context import CryptContext
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-    db = SessionLocal()
-    try:
-        if not db.query(UserModel).filter(UserModel.username == "admin").first():
-            hashed = pwd_context.hash("admin123")
-            db.add(UserModel(
-                id                       = str(uuid.uuid4()),
-                username                 = "admin",
-                hashed_password          = hashed,
-                role                     = "admin",
-                email                    = "",
-                created_at               = datetime.now().isoformat(),
-                password_change_required = True,
-                is_active                = True,
-            ))
-            db.commit()
-            logger.info("🔐 Varsayılan admin oluşturuldu → kullanıcı: admin / şifre: admin123")
-            logger.warning("⚠️  Üretimde şifreyi mutlaka değiştirin!")
-    except Exception as exc:
-        logger.error(f"Varsayılan kullanıcı oluşturulamadı: {exc}")
-        db.rollback()
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# 6. SESSION DEPENDENCY (FastAPI Depends ile kullanım için)
-# ---------------------------------------------------------------------------
-
 def get_db():
-    """
-    FastAPI endpoint'lerinde kullanım:
-        db: Session = Depends(get_db)
-    """
     db = SessionLocal()
     try:
         yield db

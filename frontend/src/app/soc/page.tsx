@@ -158,6 +158,9 @@ export default function SOCDashboard() {
 
   // Auth
   const [token, setToken] = useState<string | null>(null);
+  const [refreshToken, setRefreshToken] = useState<string | null>(null);
+  const [pending2FAToken, setPending2FAToken] = useState<string | null>(null);
+  const [login2FACode, setLogin2FACode] = useState("");
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [loginError, setLoginError] = useState("");
 
@@ -226,47 +229,203 @@ export default function SOCDashboard() {
 
   useEffect(() => {
     const t = localStorage.getItem('soc_token');
-    if (t) { setToken(t); tokenRef.current = t; }
+    const rt = localStorage.getItem('soc_refresh_token');
+
+    if (t) {
+      setToken(t);
+      tokenRef.current = t;
+    }
+    if (rt) {
+      setRefreshToken(rt);
+    }
   }, []);
+
+  const clearSession = useCallback(() => {
+    setToken(null);
+    setRefreshToken(null);
+    setPending2FAToken(null);
+    setLogin2FACode("");
+    tokenRef.current = null;
+    localStorage.removeItem('soc_token');
+    localStorage.removeItem('soc_refresh_token');
+  }, []);
+
+  const headers = (overrideToken?: string) => {
+    const t = overrideToken || tokenRef.current || localStorage.getItem('soc_token') || token;
+    const base: Record<string, string> = { "Content-Type": "application/json" };
+    if (t) base.Authorization = `Bearer ${t}`;
+    return base;
+  };
+
+  const refreshAccessToken = useCallback(async (): Promise<string | null> => {
+    const rt = localStorage.getItem('soc_refresh_token') || refreshToken;
+    if (!rt) return null;
+
+    try {
+      const res = await fetch(`${API}/api/token/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: rt }),
+      });
+
+      if (!res.ok) return null;
+
+      const d = await res.json();
+      if (!d.access_token) return null;
+
+      setToken(d.access_token);
+      tokenRef.current = d.access_token;
+      localStorage.setItem('soc_token', d.access_token);
+
+      if (d.refresh_token) {
+        setRefreshToken(d.refresh_token);
+        localStorage.setItem('soc_refresh_token', d.refresh_token);
+      }
+
+      return d.access_token;
+    } catch {
+      return null;
+    }
+  }, [refreshToken]);
+
+  const validateStoredSession = useCallback(async () => {
+    const currentToken = tokenRef.current || localStorage.getItem('soc_token');
+    if (!currentToken) return;
+
+    try {
+      const res = await fetch(`${API}/api/me`, { headers: headers(currentToken) });
+      if (res.ok) return;
+
+      if (res.status === 401) {
+        const newToken = await refreshAccessToken();
+        if (!newToken) clearSession();
+      }
+    } catch {
+      clearSession();
+    }
+  }, [clearSession, refreshAccessToken]);
+
+  useEffect(() => {
+    validateStoredSession();
+  }, [validateStoredSession]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
+
     try {
       const fd = new FormData();
       fd.append("username", loginForm.username);
       fd.append("password", loginForm.password);
+
       const res = await fetch(`${API}/api/login`, { method: "POST", body: fd });
-      if (res.ok) {
-        const d = await res.json();
-        setToken(d.access_token);
-        tokenRef.current = d.access_token;
-        localStorage.setItem('soc_token', d.access_token);
-        if (d.password_change_required) {
-          setShowPasswordChange(true);
-        }
-      } else {
-        setLoginError("Kullanıcı adı veya şifre hatalı!");
+      const d = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setLoginError(d.detail || "Kullanıcı adı veya şifre hatalı!");
+        return;
       }
-    } catch { setLoginError("Sunucuya erişilemiyor."); }
-  };
 
-  const headers = () => {
-    const t = tokenRef.current || localStorage.getItem('soc_token') || token;
-    return { "Authorization": `Bearer ${t}`, "Content-Type": "application/json" };
-  };
+      if (d.two_fa_required) {
+        setPending2FAToken(d.pending_2fa_token || null);
+        setLogin2FACode("");
+        setLoginError("2FA kodunu girin.");
+        return;
+      }
 
-  // fetch wrapper — 401 gelirse otomatik logout
-  const authFetch = async (url: string, options: RequestInit = {}): Promise<Response> => {
-    const res = await fetch(url, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
-    if (res.status === 401) {
-      notify("Oturum süresi dolmuş — tekrar giriş yapın", "err");
-      setToken(null);
-      tokenRef.current = null;
-      localStorage.removeItem('soc_token');
+      setToken(d.access_token);
+      setRefreshToken(d.refresh_token || null);
+      tokenRef.current = d.access_token;
+      localStorage.setItem('soc_token', d.access_token);
+      if (d.refresh_token) {
+        localStorage.setItem('soc_refresh_token', d.refresh_token);
+      }
+
+      if (d.password_change_required) {
+        setShowPasswordChange(true);
+      }
+    } catch {
+      setLoginError("Sunucuya erişilemiyor.");
     }
-    return res;
   };
+
+  const handleLogin2FA = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setLoginError("");
+
+    if (!pending2FAToken || login2FACode.trim().length !== 6) {
+      setLoginError("Geçerli 6 haneli 2FA kodu girin.");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/api/login/2fa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pending_2fa_token: pending2FAToken,
+          totp_code: login2FACode.trim(),
+        }),
+      });
+
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLoginError(d.detail || "2FA doğrulaması başarısız");
+        return;
+      }
+
+      setPending2FAToken(null);
+      setLogin2FACode("");
+      setToken(d.access_token);
+      setRefreshToken(d.refresh_token || null);
+      tokenRef.current = d.access_token;
+      localStorage.setItem('soc_token', d.access_token);
+      if (d.refresh_token) {
+        localStorage.setItem('soc_refresh_token', d.refresh_token);
+      }
+
+      if (d.password_change_required) {
+        setShowPasswordChange(true);
+      }
+    } catch {
+      setLoginError("Sunucuya erişilemiyor.");
+    }
+  };
+
+  // fetch wrapper — 401 gelirse refresh, yine olmazsa logout
+  const authFetch = useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
+    let res = await fetch(url, {
+      ...options,
+      headers: {
+        ...headers(),
+        ...(options.headers || {}),
+      },
+    });
+
+    if (res.status !== 401) return res;
+
+    const newToken = await refreshAccessToken();
+    if (!newToken) {
+      notify("Oturum süresi dolmuş — tekrar giriş yapın", "err");
+      clearSession();
+      return res;
+    }
+
+    res = await fetch(url, {
+      ...options,
+      headers: {
+        ...headers(newToken),
+        ...(options.headers || {}),
+      },
+    });
+
+    if (res.status === 401) {
+      notify("Oturum doğrulanamadı — tekrar giriş yapın", "err");
+      clearSession();
+    }
+
+    return res;
+  }, [clearSession, refreshAccessToken, token]);
 
   // ─── DATA FETCHING ───────────────────────────────────────────────────────
 
@@ -276,15 +435,16 @@ export default function SOCDashboard() {
   };
 
   const fetchAll = useCallback(async () => {
-    if (!token) return;
+    if (!tokenRef.current && !localStorage.getItem('soc_token')) return;
+
     try {
       const [statsR, alertsR, analyticsR, assetsR, uebaR, sigmaR] = await Promise.allSettled([
-        fetch(`${API}/api/stats`,            { headers: headers() }),
-        fetch(`${API}/api/alerts`,           { headers: headers() }),
-        fetch(`${API}/api/analytics`,        { headers: headers() }),
-        fetch(`${API}/api/v1/assets`,        { headers: headers() }),
-        fetch(`${API}/api/v1/ueba/profiles`, { headers: headers() }),
-        fetch(`${API}/api/v1/sigma/stats`,   { headers: headers() }),
+        authFetch(`${API}/api/stats`),
+        authFetch(`${API}/api/alerts`),
+        authFetch(`${API}/api/analytics`),
+        authFetch(`${API}/api/v1/assets`),
+        authFetch(`${API}/api/v1/ueba/profiles`),
+        authFetch(`${API}/api/v1/sigma/stats`),
       ]);
 
       if (statsR.status === 'fulfilled' && statsR.value.ok) {
@@ -310,8 +470,10 @@ export default function SOCDashboard() {
       if (sigmaR.status === 'fulfilled' && sigmaR.value.ok) {
         setSigmaStats(await sigmaR.value.json());
       }
-    } catch (e) { console.error("Fetch error:", e); }
-  }, [token]);
+    } catch (e) {
+      console.error("Fetch error:", e);
+    }
+  }, [authFetch]);
 
   // ─── WEBSOCKET ───────────────────────────────────────────────────────────
 
@@ -641,8 +803,8 @@ export default function SOCDashboard() {
     if (!huntQuery.trim()) return;
     setHuntLoading(true);
     try {
-      const res = await fetch(`${API}/api/v1/hunt`, {
-        method: "POST", headers: headers(),
+      const res = await authFetch(`${API}/api/v1/hunt`, {
+        method: "POST",
         body: JSON.stringify({ query: huntQuery, limit: 50 })
       });
       if (res.ok) setHuntResults(await res.json());
@@ -654,7 +816,7 @@ export default function SOCDashboard() {
   const updateSigmaRules = async () => {
     setLoadingAction("SIGMA_UPDATE");
     try {
-      const res = await fetch(`${API}/api/v1/sigma/update`, { method: "POST", headers: headers() });
+      const res = await authFetch(`${API}/api/v1/sigma/update`, { method: "POST" });
       if (res.ok) {
         const d = await res.json();
         setSigmaStats((p: any) => ({ ...p, total: d.total }));
@@ -667,7 +829,7 @@ export default function SOCDashboard() {
   const addRule = async () => {
     if (!newRule.name || !newRule.keyword) { notify("Kural adı ve kelime zorunlu!", "err"); return; }
     try {
-      const res = await fetch(`${API}/api/rules`, { method: "POST", headers: headers(), body: JSON.stringify(newRule) });
+      const res = await authFetch(`${API}/api/rules`, { method: "POST", body: JSON.stringify(newRule) });
       if (res.ok) {
         setShowRuleModal(false);
         setNewRule({ name: "", keyword: "", risk_score: 50, severity: "WARNING" });
@@ -722,20 +884,43 @@ export default function SOCDashboard() {
                   required
                 />
               </div>
+              {pending2FAToken && (
+                <div>
+                  <label className="text-[9px] font-black text-emerald-400/70 uppercase tracking-[0.2em] block mb-1.5">2FA Kodu</label>
+                  <input
+                    type="text"
+                    value={login2FACode}
+                    onChange={e => setLogin2FACode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    className="w-full bg-black/60 border border-white/8 rounded-xl px-4 py-3 text-sm text-white font-mono tracking-[0.35em] text-center placeholder:text-white/15 focus:border-emerald-500/40 focus:outline-none transition-colors"
+                    placeholder="000000"
+                    maxLength={6}
+                  />
+                </div>
+              )}
               {loginError && (
                 <div className="text-red-400 text-xs bg-red-500/8 border border-red-500/15 rounded-xl py-2.5 px-4 text-center">
                   {loginError}
                 </div>
               )}
-              <button
-                type="submit"
-                className="w-full py-3.5 bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white rounded-xl font-black text-[11px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 mt-2"
-              >
-                <LogIn size={14} /> GİRİŞ YAP
-              </button>
+              {!pending2FAToken ? (
+                <button
+                  type="submit"
+                  className="w-full py-3.5 bg-red-600 hover:bg-red-500 active:scale-[0.98] text-white rounded-xl font-black text-[11px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 mt-2"
+                >
+                  <LogIn size={14} /> GİRİŞ YAP
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleLogin2FA}
+                  className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white rounded-xl font-black text-[11px] uppercase tracking-[0.2em] transition-all flex items-center justify-center gap-2 mt-2"
+                >
+                  <ShieldCheck size={14} /> 2FA DOĞRULA
+                </button>
+              )}
             </form>
             <p className="text-center text-[9px] text-white/20 mt-5">
-              Varsayılan: <span className="text-white/40">admin</span> / <span className="text-white/40">admin123</span>
+              Giriş yaptıktan sonra erişim tokenı otomatik yenilenir.
             </p>
           </div>
         </div>
@@ -853,7 +1038,7 @@ export default function SOCDashboard() {
             {wsConnected ? 'LIVE' : 'OFFLINE'}
           </div>
           <button
-            onClick={() => { setToken(null); tokenRef.current = null; localStorage.removeItem('soc_token'); }}
+            onClick={() => clearSession()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/6 text-white/30 hover:text-white/60 text-[10px] font-bold transition-all"
           >
             <Lock size={11} /> Çıkış

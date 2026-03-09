@@ -89,14 +89,13 @@ class EmailNotifier:
             logger.error(f"E-posta hatası: {e}")
             return False
 
-    def send_invite(self, to_email: str, username: str, temp_password: str) -> bool:
-        """Kullanıcı davet e-postası."""
+    def send_invite_link(self, to_email: str, username: str, setup_url: str) -> bool:
+        """Kullanıcı davet e-postası — sadece setup URL, şifre içermez."""
         if not self.smtp_user or not self.smtp_password:
             return False
-        server_url = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")[0]
         try:
             msg            = MIMEMultipart("alternative")
-            msg["Subject"] = "SolidTrace — Hesabınız Hazır"
+            msg["Subject"] = "SolidTrace — Hesabınızı Oluşturun"
             msg["From"]    = self.from_email
             msg["To"]      = to_email
 
@@ -107,15 +106,14 @@ class EmailNotifier:
               </div>
               <div style="padding:28px 32px">
                 <h2 style="font-size:16px;color:#fff;margin-top:0">Hesabınız Oluşturuldu</h2>
-                <div style="background:#ffffff08;border:1px solid #ffffff12;border-radius:8px;padding:16px;margin:16px 0">
-                  <p style="margin:0 0 8px;font-size:12px;color:#888">Kullanıcı Adı</p>
-                  <code style="font-size:15px;color:#60a5fa">{username}</code>
-                  <p style="margin:12px 0 8px;font-size:12px;color:#888">Geçici Şifre</p>
-                  <code style="font-size:15px;color:#34d399">{temp_password}</code>
-                </div>
-                <a href="{server_url}" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:10px 24px;border-radius:8px;font-size:13px;font-weight:bold">
-                  Platforma Giriş Yap →
+                <p style="color:#94a3b8">Merhaba <strong>{username}</strong>, SolidTrace platformuna davet edildiniz.</p>
+                <p style="color:#94a3b8">Aşağıdaki butona tıklayarak şifrenizi belirleyin. Bu bağlantı <strong>24 saat</strong> geçerlidir.</p>
+                <a href="{setup_url}" style="display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:12px 28px;border-radius:8px;font-size:14px;font-weight:bold;margin-top:8px">
+                  Şifremi Oluştur →
                 </a>
+                <p style="margin-top:24px;font-size:11px;color:#475569">
+                  Bu e-postayı siz talep etmediyseniz görmezden gelebilirsiniz.
+                </p>
               </div>
             </div>
             """
@@ -124,7 +122,7 @@ class EmailNotifier:
                 s.starttls()
                 s.login(self.smtp_user, self.smtp_password)
                 s.sendmail(self.smtp_user, to_email, msg.as_string())
-            logger.info(f"📧 Davet e-postası → {to_email}")
+            logger.info(f"📧 Davet linki gönderildi → {to_email}")
             return True
         except Exception as e:
             logger.error(f"Davet e-postası hatası: {e}")

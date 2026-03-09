@@ -1,0 +1,32 @@
+# --- Web Çerçevesi ve Sunucu ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+websockets==14.1
+
+# --- Güvenlik, Kimlik Doğrulama ve Şifreleme ---
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+python-jose[cryptography]==3.3.0
+slowapi==0.1.9
+pyotp==2.9.0
+qrcode[pil]==8.0
+
+# --- Veritabanı (ORM ve Sürücüler) ---
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+
+# --- Çevresel Değişkenler ve Veri Doğrulama ---
+python-dotenv==1.0.1
+pydantic==2.10.3
+
+# --- Dış API İletişimi ve Yapay Zeka ---
+httpx==0.28.1
+groq==0.13.1
+requests==2.32.3
+aiohttp==3.11.11
+
+# --- Sistem İzleme, Önbellek ve Raporlama ---
+redis==5.2.1
+psutil==6.1.0
+reportlab==4.2.5

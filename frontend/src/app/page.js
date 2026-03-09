@@ -10,8 +10,9 @@ import {
 const API = "http://localhost:8000";
 const WS  = "ws://localhost:8000/ws/alerts";
 
-const fmtUptime = (s) => {
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+const fmtUptime = (s = 0) => {
+  const n = Number(s ?? 0);
+  const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60);
   return h > 0 ? `${h}sa ${m}dk` : `${m}dk`;
 };
 
@@ -38,50 +39,87 @@ const FEATURES = [
 ];
 
 export default function Home() {
-  const [socOnline,    setSocOnline]    = useState(false);
-  const [status,       setStatus]       = useState(null);
-  const [agentInfo,    setAgentInfo]    = useState(null);
+  const [socOnline, setSocOnline] = useState(false);
+  const [status, setStatus] = useState({
+    backend: false,
+    db: false,
+    agents_online: 0,
+    total_alerts: 0,
+    uptime_seconds: 0,
+  });
+  const [agentInfo, setAgentInfo] = useState(null);
   const [osintLoading, setOsintLoading] = useState(false);
-  const [osintData,    setOsintData]    = useState(null);
-  const [osintError,   setOsintError]   = useState(null);
-  const [copied,       setCopied]       = useState(null);
-  const [activeStep,   setActiveStep]   = useState(0);
-  const [lastAlert,    setLastAlert]    = useState(null);
+  const [osintData, setOsintData] = useState(null);
+  const [osintError, setOsintError] = useState(null);
+  const [copied, setCopied] = useState(null);
+  const [activeStep, setActiveStep] = useState(0);
+  const [lastAlert, setLastAlert] = useState(null);
   const wsRef = useRef(null);
+
+  const safeNumber = (v) => Number(v ?? 0);
 
   const fetchStatus = useCallback(async () => {
     try {
       const [sRes, aRes] = await Promise.allSettled([
-        fetch(`${API}/api/system/status`),
-        fetch(`${API}/api/agent/info`),
+        fetch(`${API}/api/system/status`, { cache: "no-store" }),
+        fetch(`${API}/api/agent/info`, { cache: "no-store" }),
       ]);
+
       if (sRes.status === "fulfilled" && sRes.value.ok) {
         const d = await sRes.value.json();
-        setStatus(d); setSocOnline(d.backend);
+        setStatus({
+          backend: Boolean(d?.backend ?? d?.status === "online"),
+          db: Boolean(d?.db),
+          agents_online: safeNumber(d?.agents_online),
+          total_alerts: safeNumber(d?.total_alerts),
+          uptime_seconds: safeNumber(d?.uptime_seconds),
+        });
+        setSocOnline(Boolean(d?.backend ?? d?.status === "online"));
       } else {
         try {
-          const r = await fetch(`${API}/api/stats`);
+          const r = await fetch(`${API}/api/stats`, { cache: "no-store" });
           if (r.ok) {
             const d = await r.json();
             setSocOnline(true);
-            setStatus({ backend: true, db: true, agents_online: 0, total_alerts: d.total_logs || 0, uptime_seconds: 0 });
-          } else setSocOnline(false);
-        } catch { setSocOnline(false); }
+            setStatus({
+              backend: true,
+              db: true,
+              agents_online: 0,
+              total_alerts: safeNumber(d?.total_logs),
+              uptime_seconds: 0,
+            });
+          } else {
+            setSocOnline(false);
+            setStatus((prev) => ({ ...prev, backend: false }));
+          }
+        } catch {
+          setSocOnline(false);
+          setStatus((prev) => ({ ...prev, backend: false }));
+        }
       }
+
       if (aRes.status === "fulfilled" && aRes.value.ok) {
         setAgentInfo(await aRes.value.json());
       } else {
         setAgentInfo({
-          version: "1.0.0", build_date: "2026-02-22", size_mb: 4.2, sha256: "—",
+          version: "1.0.0",
+          build_date: "2026-02-22",
+          size_mb: 4.2,
+          sha256: "—",
           changelog: [
-            "Rust tabanlı hafif agent", "Windows Event Log izleme",
+            "Rust tabanlı hafif agent",
+            "Windows Event Log izleme",
             "USB, dosya, process, registry monitörü",
             "Gerçek zamanlı WebSocket raporlama",
-            "Sigma kural motoru", "Otomatik yeniden bağlanma",
+            "Sigma kural motoru",
+            "Otomatik yeniden bağlanma",
           ],
         });
       }
-    } catch { setSocOnline(false); }
+    } catch {
+      setSocOnline(false);
+      setStatus((prev) => ({ ...prev, backend: false }));
+    }
   }, []);
 
   useEffect(() => {
@@ -92,8 +130,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!socOnline) return;
+
     const ws = new WebSocket(WS);
     wsRef.current = ws;
+
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
@@ -103,18 +143,29 @@ export default function Home() {
         }
       } catch {}
     };
-    return () => { ws.close(); wsRef.current = null; };
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
   }, [socOnline]);
 
   const runOsint = async () => {
-    setOsintLoading(true); setOsintData(null); setOsintError(null);
+    setOsintLoading(true);
+    setOsintData(null);
+    setOsintError(null);
+
     try {
       let ip = "Bilinmiyor", isp = "—", city = "—", country = "—";
+
       try {
         const r = await fetch("https://ipapi.co/json/");
         if (r.ok) {
           const d = await r.json();
-          ip = d.ip; isp = d.org || "—"; city = d.city || "—"; country = d.country_name || "—";
+          ip = d.ip || "Bilinmiyor";
+          isp = d.org || "—";
+          city = d.city || "—";
+          country = d.country_name || "—";
         }
       } catch {}
 
@@ -129,10 +180,14 @@ export default function Home() {
             if (ice && ice.candidate && ice.candidate.candidate) {
               const m = ice.candidate.candidate.match(/([0-9]{1,3}\.){3}[0-9]{1,3}/g);
               if (m) rtcIPs.push(...m);
-            } else if (!ice.candidate) { rtc.close(); resolve(); }
+            } else if (!ice.candidate) {
+              rtc.close();
+              resolve();
+            }
           };
           setTimeout(resolve, 3000);
         });
+
         const priv = rtcIPs.filter(i => i.startsWith("192.168.") || i.startsWith("10.") || i.startsWith("172."));
         if (priv.length > 0) webRTC_Leak = `EVET ⚠️ (${priv[0]})`;
       } catch {}
@@ -148,13 +203,16 @@ export default function Home() {
     } catch (e) {
       setOsintError("Tarama başarısız: " + (e.message || "Bilinmeyen hata"));
     }
+
     setOsintLoading(false);
   };
 
-  const copy = (text, key) => {
-    navigator.clipboard.writeText(text);
-    setCopied(key);
-    setTimeout(() => setCopied(null), 2000);
+  const copy = async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied(null), 2000);
+    } catch {}
   };
 
   return (
@@ -175,7 +233,6 @@ export default function Home() {
       <div className="fixed top-0 left-0 right-0 h-px bg-linear-to-r from-transparent via-red-500/40 to-transparent z-50" />
       <div className="fixed top-0 left-1/2 -translate-x-1/2 w-150 h-55 bg-red-500/4 blur-3xl pointer-events-none z-0" />
 
-      {/* HEADER */}
       <header className="sticky top-0 z-40 border-b border-white/5 bg-black/70 backdrop-blur-2xl">
         <div className="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -202,8 +259,6 @@ export default function Home() {
       </header>
 
       <div className="max-w-6xl mx-auto px-5 pb-24 relative z-10 space-y-10 pt-14">
-
-        {/* HERO */}
         <div className="a1">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-red-500/5 border border-red-500/15 rounded-full text-[9px] text-red-400 font-black uppercase tracking-widest mb-6">
             <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
@@ -229,10 +284,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* İKİ KOLON */}
         <div className="a2 grid sm:grid-cols-2 gap-4">
-
-          {/* AGENT KARTI */}
           <div className={`pb border rounded-2xl overflow-hidden flex flex-col ${
             socOnline
               ? "bg-emerald-500/2.5 border-emerald-500/15"
@@ -262,20 +314,18 @@ export default function Home() {
             </div>
 
             <div className="p-5 flex flex-col gap-4 flex-1">
-              {socOnline && status && (
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { label: "Online Agent", val: status.agents_online },
-                    { label: "Toplam Olay",  val: status.total_alerts },
-                    { label: "Uptime",       val: fmtUptime(status.uptime_seconds) },
-                  ].map(s => (
-                    <div key={s.label} className="bg-black/30 border border-white/5 rounded-xl p-2.5 text-center">
-                      <p className="text-[8px] text-white/25 mb-1">{s.label}</p>
-                      <p className="text-xs font-black text-emerald-400">{s.val}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "Online Agent", val: safeNumber(status?.agents_online).toLocaleString("tr-TR") },
+                  { label: "Toplam Olay",  val: safeNumber(status?.total_alerts).toLocaleString("tr-TR") },
+                  { label: "Uptime",       val: fmtUptime(status?.uptime_seconds) },
+                ].map(s => (
+                  <div key={s.label} className="bg-black/30 border border-white/5 rounded-xl p-2.5 text-center">
+                    <p className="text-[8px] text-white/25 mb-1">{s.label}</p>
+                    <p className="text-xs font-black text-emerald-400">{s.val}</p>
+                  </div>
+                ))}
+              </div>
 
               <div className="flex flex-wrap gap-1.5">
                 {FEATURES.map((f, i) => (
@@ -298,7 +348,12 @@ export default function Home() {
               <div className="mt-auto flex flex-col gap-2">
                 <a
                   href={`${API}/api/agent/download`}
-                  onClick={e => { if (!socOnline) { e.preventDefault(); alert("Backend çalışmıyor — önce backend'i başlatın."); }}}
+                  onClick={e => {
+                    if (!socOnline) {
+                      e.preventDefault();
+                      alert("Backend çalışmıyor — önce backend'i başlatın.");
+                    }
+                  }}
                   className="flex items-center justify-center gap-2 py-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all group"
                 >
                   <Download size={14} className="group-hover:-translate-y-0.5 transition-transform" />
@@ -311,7 +366,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* OSINT KARTI */}
           <div className="bg-white/1.5 border border-white/5 rounded-2xl overflow-hidden flex flex-col">
             <div className="p-5 border-b border-white/5">
               <div className="flex items-center gap-2.5">
@@ -350,11 +404,14 @@ export default function Home() {
               ) : (
                 <div className="flex flex-col gap-2.5 flex-1">
                   {[
-                    { label: "IP Adresi",       val: osintData.ip,  color: "text-blue-400" },
+                    { label: "IP Adresi", val: osintData.ip, color: "text-blue-400" },
                     { label: "Servis Sağlayıcı", val: osintData.isp, color: "text-white/50" },
-                    { label: "Konum",            val: `${osintData.city}, ${osintData.country}`, color: "text-white/50" },
-                    { label: "WebRTC Sızıntısı", val: osintData.webRTC_Leak,
-                      color: osintData.webRTC_Leak.includes("EVET") ? "text-red-400" : "text-emerald-400" },
+                    { label: "Konum", val: `${osintData.city}, ${osintData.country}`, color: "text-white/50" },
+                    {
+                      label: "WebRTC Sızıntısı",
+                      val: osintData.webRTC_Leak,
+                      color: osintData.webRTC_Leak.includes("EVET") ? "text-red-400" : "text-emerald-400"
+                    },
                   ].map(r => (
                     <div key={r.label} className="flex items-center justify-between bg-black/30 border border-white/5 rounded-xl px-3 py-2.5">
                       <span className="text-[9px] text-white/25 uppercase tracking-widest">{r.label}</span>
@@ -374,7 +431,10 @@ export default function Home() {
                     </div>
                   )}
                   <button
-                    onClick={() => { setOsintData(null); setOsintError(null); }}
+                    onClick={() => {
+                      setOsintData(null);
+                      setOsintError(null);
+                    }}
                     className="mt-auto py-2 bg-white/2.5 hover:bg-white/5 border border-white/5 text-white/35 hover:text-white/65 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all"
                   >
                     Yeni Tarama
@@ -385,7 +445,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* KURULUM ADIMLARI */}
         <div className="a3">
           <p className="text-[9px] text-white/20 uppercase tracking-widest mb-5 flex items-center gap-3">
             <span className="flex-1 h-px bg-white/5" />Kurulum — 4 Adım<span className="flex-1 h-px bg-white/5" />
@@ -411,7 +470,10 @@ export default function Home() {
                   <div className="mt-3 flex items-center gap-2 bg-black/50 border border-white/5 rounded-lg px-2.5 py-2">
                     <code className="text-[10px] text-emerald-400 flex-1 font-mono">{step.code}</code>
                     <button
-                      onClick={e => { e.stopPropagation(); copy(step.code, `step-${i}`); }}
+                      onClick={e => {
+                        e.stopPropagation();
+                        copy(step.code, `step-${i}`);
+                      }}
                       className="text-white/20 hover:text-white/55 transition"
                     >
                       <span className="flex">{copied === `step-${i}` ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}</span>
@@ -423,55 +485,54 @@ export default function Home() {
           </div>
         </div>
 
-        {/* SİSTEM DURUMU */}
-        {status && (
-          <div className="a4 bg-white/1 border border-white/5 rounded-2xl p-5">
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-[9px] text-white/25 uppercase tracking-widest flex items-center gap-2">
-                <Server size={10} /> Sistem Durumu
+        <div className="a4 bg-white/1 border border-white/5 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-[9px] text-white/25 uppercase tracking-widest flex items-center gap-2">
+              <Server size={10} /> Sistem Durumu
+            </p>
+            <div className="flex items-center gap-3">
+              {safeNumber(status?.uptime_seconds) > 0 && (
+                <span className="text-[9px] text-white/20 font-mono flex items-center gap-1">
+                  <Clock size={9} /> {fmtUptime(status?.uptime_seconds)}
+                </span>
+              )}
+              <button onClick={fetchStatus} className="text-white/20 hover:text-white/50 transition">
+                <RefreshCw size={11} />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            {[
+              { label: "Backend API",  val: status?.backend ? "Çalışıyor" : "Kapalı", ok: !!status?.backend },
+              { label: "PostgreSQL",   val: status?.db ? "Bağlı" : "Bağlantı yok", ok: !!status?.db },
+              { label: "Online Agent", val: `${safeNumber(status?.agents_online).toLocaleString("tr-TR")} makine`, ok: true },
+              { label: "Toplam Olay",  val: safeNumber(status?.total_alerts).toLocaleString("tr-TR"), ok: true },
+            ].map((s, i) => (
+              <div key={i} className="bg-black/30 border border-white/5 rounded-xl p-3">
+                <p className="text-[8px] text-white/20 uppercase tracking-widest mb-2">{s.label}</p>
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.ok ? "bg-emerald-400" : "bg-red-500 animate-pulse"}`} />
+                  <span className="text-xs font-black text-white/50">{s.val}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {!status?.backend && (
+            <div className="mt-3 bg-red-500/5 border border-red-500/15 rounded-xl p-3">
+              <p className="text-[8px] text-red-400 font-black uppercase tracking-widest mb-2 flex items-center gap-1.5">
+                <AlertCircle size={10} /> Backend başlatılmamış
               </p>
-              <div className="flex items-center gap-3">
-                {status.uptime_seconds > 0 && (
-                  <span className="text-[9px] text-white/20 font-mono flex items-center gap-1">
-                    <Clock size={9} /> {fmtUptime(status.uptime_seconds)}
-                  </span>
-                )}
-                <button onClick={fetchStatus} className="text-white/20 hover:text-white/50 transition">
-                  <RefreshCw size={11} />
+              <div className="flex items-center gap-2 bg-black/50 rounded-lg px-3 py-2 border border-white/5">
+                <code className="text-[9px] text-white/35 font-mono flex-1">cd backend && uvicorn app.main:app --reload</code>
+                <button onClick={() => copy("cd backend && uvicorn app.main:app --reload", "bcmd")} className="text-white/20 hover:text-white/55 transition">
+                  <span className="flex">{copied === "bcmd" ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}</span>
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-              {[
-                { label: "Backend API",  val: status.backend ? "Çalışıyor" : "Kapalı",       ok: status.backend },
-                { label: "PostgreSQL",   val: status.db      ? "Bağlı"     : "Bağlantı yok", ok: status.db },
-                { label: "Online Agent", val: `${status.agents_online} makine`,               ok: true },
-                { label: "Toplam Olay",  val: status.total_alerts.toLocaleString("tr-TR"),    ok: true },
-              ].map((s, i) => (
-                <div key={i} className="bg-black/30 border border-white/5 rounded-xl p-3">
-                  <p className="text-[8px] text-white/20 uppercase tracking-widest mb-2">{s.label}</p>
-                  <div className="flex items-center gap-2">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.ok ? "bg-emerald-400" : "bg-red-500 animate-pulse"}`} />
-                    <span className="text-xs font-black text-white/50">{s.val}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {!status.backend && (
-              <div className="mt-3 bg-red-500/5 border border-red-500/15 rounded-xl p-3">
-                <p className="text-[8px] text-red-400 font-black uppercase tracking-widest mb-2 flex items-center gap-1.5">
-                  <AlertCircle size={10} /> Backend başlatılmamış
-                </p>
-                <div className="flex items-center gap-2 bg-black/50 rounded-lg px-3 py-2 border border-white/5">
-                  <code className="text-[9px] text-white/35 font-mono flex-1">cd backend && python api_advanced_v2.py</code>
-                  <button onClick={() => copy("cd backend && python api_advanced_v2.py", "bcmd")} className="text-white/20 hover:text-white/55 transition">
-                    <span className="flex">{copied === "bcmd" ? <Check size={10} className="text-emerald-400" /> : <Copy size={10} />}</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <footer className="border-t border-white/5 py-6">
