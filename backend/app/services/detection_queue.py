@@ -2,12 +2,6 @@
 app.services.detection_queue
 ============================
 PostgreSQL tabanlı detection queue.
-
-Amaç:
-- ingest request'ini hafifletmek
-- event'leri durable queue'ya almak
-- worker ile işlemek
-- retry / dead-letter mantığı sağlamak
 """
 
 from __future__ import annotations
@@ -28,7 +22,6 @@ logger = logging.getLogger("SolidTrace.Queue")
 STATUS_PENDING = "pending"
 STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
-STATUS_FAILED = "failed"
 STATUS_DEAD = "dead"
 
 
@@ -49,28 +42,6 @@ class DetectionQueueService:
         self.poll_interval = poll_interval
         self.max_attempts = max_attempts
         self._running = False
-
-    def enqueue_event(self, tenant_id: Optional[str], payload: dict[str, Any]) -> str:
-        db = SessionLocal()
-        try:
-            item_id = str(uuid.uuid4())
-            item = DetectionQueueModel(
-                id=item_id,
-                tenant_id=tenant_id,
-                payload_json=json.dumps(payload, ensure_ascii=False),
-                status=STATUS_PENDING,
-                created_at=utcnow_iso(),
-                available_at=utcnow_iso(),
-                attempts=0,
-                locked_by=None,
-                locked_at=None,
-                error_message=None,
-            )
-            db.add(item)
-            db.commit()
-            return item_id
-        finally:
-            db.close()
 
     def enqueue_many(self, tenant_id: Optional[str], payloads: list[dict[str, Any]]) -> int:
         db = SessionLocal()
@@ -126,12 +97,7 @@ class DetectionQueueService:
             if not claimed_ids:
                 return []
 
-            claimed = (
-                db.query(DetectionQueueModel)
-                .filter(DetectionQueueModel.id.in_(claimed_ids))
-                .all()
-            )
-            return claimed
+            return db.query(DetectionQueueModel).filter(DetectionQueueModel.id.in_(claimed_ids)).all()
         finally:
             db.close()
 
@@ -166,9 +132,7 @@ class DetectionQueueService:
             else:
                 delay_seconds = min(60, 2 ** item.attempts)
                 item.status = STATUS_PENDING
-                item.available_at = (
-                    datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
-                ).isoformat()
+                item.available_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
 
             db.commit()
         finally:

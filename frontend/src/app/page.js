@@ -251,7 +251,7 @@ export default function Home() {
               <span className={`w-1.5 h-1.5 rounded-full ${socOnline ? "bg-emerald-400" : "bg-red-500"}`} />
               {socOnline ? "BACKEND ONLINE" : "BACKEND OFFLINE"}
             </div>
-            <Link href="/soc" className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all">
+            <Link href="/dashboard" className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 active:scale-95 text-white rounded-lg text-[10px] font-black uppercase tracking-widest transition-all">
               SOC Paneli <ArrowRight size={11} />
             </Link>
           </div>
@@ -359,7 +359,7 @@ export default function Home() {
                   <Download size={14} className="group-hover:-translate-y-0.5 transition-transform" />
                   Agent İndir (.zip)
                 </a>
-                <Link href="/soc" className="flex items-center justify-center gap-2 py-2.5 bg-white/2.5 hover:bg-white/5 border border-white/5 text-white/40 hover:text-white/70 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all">
+                <Link href="/dashboard" className="flex items-center justify-center gap-2 py-2.5 bg-white/2.5 hover:bg-white/5 border border-white/5 text-white/40 hover:text-white/70 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all">
                   SOC Dashboard <ChevronRight size={11} />
                 </Link>
               </div>
@@ -538,7 +538,7 @@ export default function Home() {
       <footer className="border-t border-white/5 py-6">
         <div className="max-w-6xl mx-auto px-5 flex items-center justify-between text-[9px] text-white/15">
           <span className="font-black tracking-widest">SOLIDTRACE SOC © 2026</span>
-          <Link href="/soc" className="flex items-center gap-1 hover:text-white/40 transition">
+          <Link href="/dashboard" className="flex items-center gap-1 hover:text-white/40 transition">
             SOC Paneli <ChevronRight size={9} />
           </Link>
         </div>

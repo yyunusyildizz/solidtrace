@@ -14,21 +14,18 @@ eklendi.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import logging
 import os
-import sys
-import uuid
 import time
+import uuid
 from collections import OrderedDict
-from fastapi import Depends, Header, HTTPException, Request, status
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -43,7 +40,7 @@ logger = logging.getLogger("SolidTrace.Security")
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
     logger.critical("JWT_SECRET_KEY tanımlı değil")
-    sys.exit(1)
+    raise RuntimeError("JWT_SECRET_KEY tanımlı değil")
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
@@ -73,9 +70,13 @@ AGENT_SECRET_KEK = os.getenv("AGENT_SECRET_KEK")
 if not AGENT_SECRET_KEK:
     logger.warning("AGENT_SECRET_KEK tanımlı değil. Agent auth aktif edilmeden önce set edilmeli.")
 
-LEGACY_AGENT_AUTH = os.getenv("LEGACY_AGENT_AUTH", "true").lower() == "true"
+# Ticari dağıtım için güvenli default: false
+LEGACY_AGENT_AUTH = os.getenv("LEGACY_AGENT_AUTH", "false").lower() == "true"
+
 AGENT_NONCE_TTL_SECONDS = int(os.getenv("AGENT_NONCE_TTL_SECONDS", "300"))
 AGENT_RATE_LIMIT_PER_MINUTE = int(os.getenv("AGENT_RATE_LIMIT_PER_MINUTE", "120"))
+AGENT_IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("AGENT_IP_RATE_LIMIT_PER_MINUTE", "60"))
+
 
 # ---------------------------------------------------------------------------
 # PASSWORD HELPERS
@@ -383,14 +384,12 @@ async def verify_tenant_agent_key(
 
     db = SessionLocal()
     try:
-        # Önce explicit tenant header ile dene
         if x_tenant_id:
             tenant = db.query(TenantModel).filter(TenantModel.id == x_tenant_id).first()
             if tenant and tenant.is_active and tenant.agent_key and secure_compare(tenant.agent_key, x_agent_key):
                 logger.warning("Legacy agent auth kullanıldı (tenant-scoped)")
                 return tenant.id
 
-        # Sonra global tenant key eşleşmelerine bak
         tenant = db.query(TenantModel).filter(TenantModel.agent_key == x_agent_key).first()
         if tenant and tenant.is_active:
             logger.warning("Legacy agent auth kullanıldı")
@@ -400,6 +399,7 @@ async def verify_tenant_agent_key(
     finally:
         db.close()
 
+
 # ---------------------------------------------------------------------------
 # IN-MEMORY FALLBACK STORES
 # ---------------------------------------------------------------------------
@@ -407,8 +407,10 @@ async def verify_tenant_agent_key(
 class NonceStore:
     """
     Redis yoksa geçici in-memory replay koruması.
-    Tek process için çalışır. Production'da Redis önerilir.
+    Sadece tek process dev/test ortamı için uygundur.
+    Production'da Redis-backed nonce store zorunlu olmalıdır.
     """
+
     def __init__(self, ttl_seconds: int = 300, max_items: int = 50000):
         self.ttl_seconds = ttl_seconds
         self.max_items = max_items
@@ -417,13 +419,14 @@ class NonceStore:
     def _cleanup(self) -> None:
         now = time.time()
         expired = []
-        for k, exp in self._store.items():
+        for key, exp in self._store.items():
             if exp <= now:
-                expired.append(k)
+                expired.append(key)
             else:
                 break
-        for k in expired:
-            self._store.pop(k, None)
+
+        for key in expired:
+            self._store.pop(key, None)
 
         while len(self._store) > self.max_items:
             self._store.popitem(last=False)
@@ -442,9 +445,11 @@ class NonceStore:
 
 class RateLimiterStore:
     """
-    Agent bazlı hafif sliding-window rate limit.
-    Redis yoksa tek process fallback.
+    Hafif sliding-window rate limit store.
+    Sadece tek process dev/test fallback çözümüdür.
+    Production'da Redis-backed rate limiting kullanılmalıdır.
     """
+
     def __init__(self, window_seconds: int = 60, max_items: int = 50000):
         self.window_seconds = window_seconds
         self.max_items = max_items
@@ -470,9 +475,9 @@ class RateLimiterStore:
 
         if len(self._store) > self.max_items:
             oldest_keys = list(self._store.keys())[:1000]
-            for k in oldest_keys:
-                if not self._store.get(k):
-                    self._store.pop(k, None)
+            for key in oldest_keys:
+                if not self._store.get(key):
+                    self._store.pop(key, None)
 
         return True
 
@@ -482,7 +487,7 @@ _rate_store = RateLimiterStore(window_seconds=60)
 
 
 # ---------------------------------------------------------------------------
-# FUTURE AGENT REQUEST DEPENDENCY
+# AGENT REQUEST HELPERS
 # ---------------------------------------------------------------------------
 
 async def get_agent_auth_headers(
@@ -491,16 +496,13 @@ async def get_agent_auth_headers(
     x_agent_nonce: Optional[str] = Header(None, alias="X-Agent-Nonce"),
     x_agent_signature: Optional[str] = Header(None, alias="X-Agent-Signature"),
 ) -> dict:
-    """
-    Sonraki adımda verify_agent_request dependency'si bunu kullanacak.
-    Şimdilik sadece header parse helper.
-    """
     return {
         "agent_id": x_agent_id,
         "timestamp": x_agent_timestamp,
         "nonce": x_agent_nonce,
         "signature": x_agent_signature,
     }
+
 
 async def verify_agent_key(
     x_agent_key: Optional[str] = Header(None, alias="X-Agent-Key"),
@@ -516,16 +518,29 @@ async def verify_agent_key(
         x_tenant_id=x_tenant_id,
     )
 
+
 def enforce_agent_nonce(agent_id: str, nonce: str) -> None:
     key = f"{agent_id}:{nonce}"
     if not _nonce_store.check_and_set(key):
         raise HTTPException(status_code=401, detail="Replay attack tespit edildi")
 
 
-def enforce_agent_rate_limit(agent_id: str) -> None:
-    if not _rate_store.hit(agent_id, AGENT_RATE_LIMIT_PER_MINUTE):
+def enforce_agent_rate_limit(agent_key: str) -> None:
+    if not _rate_store.hit(agent_key, AGENT_RATE_LIMIT_PER_MINUTE):
         raise HTTPException(status_code=429, detail="Agent rate limit aşıldı")
-    
+
+
+def enforce_ip_rate_limit(client_ip: str) -> None:
+    if not _rate_store.hit(f"ip:{client_ip}", AGENT_IP_RATE_LIMIT_PER_MINUTE):
+        raise HTTPException(status_code=429, detail="IP rate limit aşıldı")
+
+
+def get_client_ip(request: Request) -> str:
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # SIGNED AGENT REQUEST VERIFY
 # ---------------------------------------------------------------------------
@@ -548,8 +563,7 @@ async def verify_agent_request(
         raise HTTPException(status_code=401, detail="Agent auth header eksik")
 
     ensure_agent_timestamp_fresh(timestamp)
-    enforce_agent_nonce(agent_id, nonce)
-    enforce_agent_rate_limit(agent_id)
+    client_ip = get_client_ip(request)
 
     from app.database.db_manager import SessionLocal, AgentModel
 
@@ -558,7 +572,10 @@ async def verify_agent_request(
         agent = db.query(AgentModel).filter(AgentModel.id == agent_id).first()
 
         if not agent or not agent.is_active or agent.revoked_at:
+            enforce_ip_rate_limit(client_ip)
             raise HTTPException(status_code=401, detail="Agent geçersiz")
+
+        enforce_agent_rate_limit(f"{client_ip}:{agent_id}")
 
         secret = decrypt_agent_secret(agent.secret_enc)
 
@@ -577,10 +594,11 @@ async def verify_agent_request(
         if not verify_agent_signature(secret, message, signature):
             raise HTTPException(status_code=401, detail="Agent signature geçersiz")
 
-        agent.last_seen = datetime.now(timezone.utc).isoformat()
+        enforce_agent_nonce(agent_id, nonce)
+
+        agent.last_seen = datetime.now(timezone.utc)
         db.commit()
 
         return agent.tenant_id
-
     finally:
         db.close()

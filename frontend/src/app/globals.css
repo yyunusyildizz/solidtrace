@@ -55,3 +55,16 @@
     border: 1px solid rgba(99, 102, 241, 0.3);
   }
 }
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+.dark body {
+  color-scheme: dark;
+}
