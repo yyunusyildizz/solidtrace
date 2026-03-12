@@ -1,303 +1,331 @@
-# SolidTrace SOC Platform
+# 🛡️ SolidTrace
 
-SolidTrace is a next‑generation **Security Operations Center (SOC)
-platform** designed for endpoint telemetry collection, threat detection,
-and behavioral analytics.
+SolidTrace modern bir **Security Operations Center (SOC) / SIEM
+platformu** geliştirme projesidir.
 
-The platform combines **endpoint agents**, **detection engines**, and a
-**SOC dashboard** to provide advanced threat visibility.
+Amaç; endpoint telemetry, detection rules, UEBA analizleri ve
+investigation araçlarını tek bir platformda toplayarak SOC analistleri
+için **gerçek zamanlı güvenlik görünürlüğü** sağlamaktır.
+
+Bu README aynı zamanda proje için **kalıcı teknik hafıza** görevi görür.
+İleride projeye tekrar dönüldüğünde mimariyi, yapılan işleri ve
+roadmap'i hızlıca hatırlamak için hazırlanmıştır.
 
 ------------------------------------------------------------------------
 
-# Architecture
+# 🎯 Proje Amacı
+
+SolidTrace aşağıdaki problemleri çözmek için geliştirilmektedir:
+
+-   Endpoint güvenlik telemetrisini merkezi toplamak\
+-   Anormal davranışları tespit etmek\
+-   SOC analistlerinin investigation süreçlerini hızlandırmak\
+-   Güvenlik olaylarını görselleştirmek\
+-   Otomatik detection pipeline oluşturmak
+
+------------------------------------------------------------------------
+
+# 🧠 Platform Mimari
 
     Endpoint Agent
-         ↓
-    Signed API
-         ↓
-    Detection Queue
-         ↓
-    Detection Engines
-         ↓
-    Alerts
-         ↓
+          ↓
+    Ingest API
+          ↓
+    Event Queue
+          ↓
+    Detection Engine
+          ↓
+    Alert Engine
+          ↓
+    Analytics / UEBA
+          ↓
     SOC Dashboard
 
-### Technology Stack
+Platform katmanları:
 
-Backend - FastAPI - Python - WebSockets
-
-Frontend - Next.js - React - TailwindCSS
-
-Database - PostgreSQL
-
-Detection Engines - Sigma detection engine - Correlation engine - UEBA
-behavioral analytics
+    Agent Layer
+    API Layer
+    Detection Layer
+    Analytics Layer
+    SOC Visualization Layer
 
 ------------------------------------------------------------------------
 
-# Core Features
+# 🏗️ Kullanılan Teknolojiler
 
-## Agent Security
+## Backend
 
-SolidTrace agents communicate with the backend using **cryptographically
-signed requests**.
+-   FastAPI
+-   SQLAlchemy
+-   PostgreSQL
+-   WebSocket
+-   Pydantic
 
-Security protections:
+## Frontend
 
--   HMAC‑SHA256 request signatures
--   Nonce replay protection
--   Timestamp validation
--   Encrypted agent secrets
--   Agent revoke lifecycle
+-   Next.js
+-   React
+-   TailwindCSS
+-   Lucide Icons
 
-Agent headers:
+## Security / Detection
 
-    X-Agent-Id
-    X-Agent-Timestamp
-    X-Agent-Nonce
-    X-Agent-Signature
-
-These protections prevent:
-
--   replay attacks
--   request tampering
--   agent impersonation
+-   Sigma-like rule engine
+-   UEBA behavioral analysis
+-   Risk scoring engine
+-   Alert correlation
 
 ------------------------------------------------------------------------
 
-# Detection Pipeline
+# 📦 Repository Yapısı
 
-Telemetry processing pipeline:
+    solidtrace/
 
-    Agent
-       ↓
-    Signed API
-       ↓
-    Detection Queue
-       ↓
-    Queue Worker
-       ↓
-    Sigma Engine
-       ↓
-    Correlation Engine
-       ↓
-    UEBA Engine
-       ↓
-    Alerts
-
-The queue architecture ensures the ingestion API remains responsive even
-under heavy load.
-
-------------------------------------------------------------------------
-
-# Detection Engines
-
-## Sigma Engine
-
-Detects known attacker techniques.
-
-Example detections:
-
--   Mimikatz execution
--   PowerShell download cradle
--   WMIC remote command execution
-
-------------------------------------------------------------------------
-
-## Correlation Engine
-
-Detects behavioral attack chains.
-
-Example detection:
-
-    PROCESS_ANOMALY_STORM
-
-Triggered when multiple suspicious processes occur within a short time
-window.
+    backend/
+     ├── app/
+     │   ├── api/
+     │   │   ├── routes_agents.py
+     │   │   ├── routes_alerts.py
+     │   │   ├── routes_actions.py
+     │   │   ├── routes_dashboard.py
+     │   │   ├── routes_sigma.py
+     │   │   └── routes_ueba.py
+     │   │
+     │   ├── core/
+     │   ├── database/
+     │   ├── schemas/
+     │   └── main.py
+     │
+    frontend/
+     ├── src/
+     │   ├── app/
+     │   │   └── (soc)
+     │   │        ├── dashboard
+     │   │        ├── alerts
+     │   │        ├── assets
+     │   │        ├── activity
+     │   │        └── investigations
+     │   │
+     │   ├── components/
+     │   │   └── soc/
+     │   │        ├── layout
+     │   │        ├── providers
+     │   │        └── ui
+     │   │
+     │   └── lib/api
 
 ------------------------------------------------------------------------
 
-## UEBA Engine
+# 🚀 Şu Ana Kadar Yapılan Geliştirmeler
 
-User and Entity Behavior Analytics.
+## Backend
 
-Tracks:
+### Agent System
 
--   user process patterns
--   anomaly frequency
--   behavioral deviation
+✔ Agent enrollment token sistemi\
+✔ Agent register endpoint\
+✔ Signed ingest sistemi\
+✔ Replay attack protection\
+✔ Agent revoke sistemi
 
-------------------------------------------------------------------------
+### Event Pipeline
 
-# Agent Lifecycle
+✔ Telemetry ingest API\
+✔ Queue worker\
+✔ Detection engine injection
 
-1.  Enrollment token generated
-2.  Agent registers
-3.  Agent receives credentials
-4.  Agent sends telemetry
+### Alerts
 
-Endpoints:
+✔ Alert lifecycle
 
-    POST /api/agents/enrollment-token
-    POST /api/agents/register
-    POST /api/v1/agent/heartbeat
-    POST /api/v1/ingest
-    POST /api/agents/{agent_id}/revoke
+    open
+    acknowledged
+    resolved
+    reopened
 
-------------------------------------------------------------------------
+✔ Alert assignment\
+✔ Analyst notes\
+✔ Alert search / filtering
 
-# Queue Architecture
+### Analytics
 
-Events are processed asynchronously.
+✔ Alert statistics\
+✔ Activity analytics\
+✔ Monthly security report (PDF)
 
-Queue table:
+### Security
 
-    detection_queue
-
-Worker processes events and sends them to detection engines.
-
-Benefits:
-
--   scalable ingestion
--   prevents API overload
--   supports distributed workers
-
-------------------------------------------------------------------------
-
-# Automated Test Scripts
-
-### agent_signed_test.py
-
-Validates:
-
--   signed heartbeat
--   signed ingest
--   replay protection
-
-### solidtrace_queue_alert_test.py
-
-End‑to‑end validation:
-
--   admin login
--   agent enrollment
--   agent registration
--   signed heartbeat
--   signed ingest
--   alert generation
--   agent revoke lifecycle
+✔ Role based access\
+✔ Audit log system\
+✔ Request ID tracking\
+✔ Signed telemetry ingest
 
 ------------------------------------------------------------------------
 
-# Current System Status
+# 🖥️ Frontend (SOC Dashboard)
 
-Validated working components:
+SolidTrace v2 ile birlikte yeni SOC arayüzü geliştirilmiştir.
 
-    Admin auth ✔
-    Agent enrollment ✔
-    Agent registration ✔
-    Signed heartbeat ✔
-    Signed ingest ✔
-    Detection queue ✔
-    Alert generation ✔
-    Replay protection ✔
-    Agent revoke ✔
+### Dashboard
 
-System state: **Operational prototype**
+✔ Metrics overview\
+✔ Alert statistics\
+✔ Risk scoring
 
-------------------------------------------------------------------------
+### Visualization
 
-# Development Roadmap
+✔ Global Threat Map\
+✔ Live Alert Stream
 
-### Sprint 1
+### Analytics
 
-Dashboard authentication stabilization
+✔ UEBA profiles\
+✔ Sigma detection stats\
+✔ Risky assets
 
-### Sprint 2
+### Investigation
 
-Agent online/offline visibility
+✔ Investigation graph\
+✔ Case based investigation\
+✔ Alert correlation view
 
-### Sprint 3
+### UI Architecture
 
-Asset inventory
-
-### Sprint 4
-
-Alert enrichment
-
-### Sprint 5
-
-Advanced correlation detection
-
-### Sprint 6
-
-SOC case management
-
-### Sprint 7
-
-Multi‑tenant hardening
+✔ SOC AppShell layout\
+✔ Dark / Light theme\
+✔ Tailwind UI system\
+✔ Panel + MetricCard components
 
 ------------------------------------------------------------------------
 
-# Development
+# 📊 SOC Dashboard Bileşenleri
 
-Clone repository
+Dashboard şu modüllerden oluşur:
 
-    git clone https://github.com/YOUR_USERNAME/solidtrace.git
-
-Backend
-
-    cd backend
-    pip install -r requirements.txt
-    uvicorn app.main:app --reload
-
-Frontend
-
-    cd frontend
-    npm install
-    npm run dev
+-   Threat Map
+-   Live Alert Stream
+-   Risky Assets
+-   UEBA Spotlight
+-   Sigma Stats
+-   Alert Analytics
+-   Recent Activity
 
 ------------------------------------------------------------------------
 
-# Environment Variables
+# 🔎 Investigation Platform
 
-Required variables:
+SOC analistleri için investigation ekranı geliştirilmiştir.
 
-    DATABASE_URL
-    JWT_SECRET_KEY
-    AGENT_SECRET_KEK
-    ACCESS_TOKEN_EXPIRE_MINUTES
-    REFRESH_TOKEN_EXPIRE_DAYS
+Investigation Graph aşağıdaki node tiplerini gösterir:
 
-------------------------------------------------------------------------
+    Host
+    User
+    Process
+    Rule
+    Alert
 
-# Security Model
+Graph ilişkileri:
 
-SolidTrace follows **security‑first architecture principles**:
-
--   signed agent communication
--   encrypted secrets
--   replay protection
--   strict token lifecycle
--   audit logging
+    User → Process
+    Process → Host
+    Process → Detection Rule
+    Rule → Alert
+    Host → Alert
 
 ------------------------------------------------------------------------
 
-# Project Context
+# 🔐 Güvenlik Özellikleri
 
-Development context is documented in:
+SolidTrace aşağıdaki güvenlik mekanizmalarını içerir:
 
-    PROJECT_CONTEXT.md
-
-This file contains:
-
--   architecture overview
--   completed milestones
--   roadmap
--   security model
+-   Agent authentication\
+-   Signed telemetry ingest\
+-   Replay attack detection\
+-   Audit logging\
+-   Role based access
 
 ------------------------------------------------------------------------
 
-# License
+# 🧪 Testler
+
+Smoke test scriptleri:
+
+    agent_signed_test.py
+    solidtrace_queue_alert_test.py
+    alert_assignment_smoke_test.py
+    dashboard_visibility_smoke_test.py
+
+Bu testler doğrular:
+
+-   Agent ingest pipeline
+-   Alert creation
+-   Alert lifecycle
+-   Dashboard data endpoints
+
+------------------------------------------------------------------------
+
+# 📈 Gelecek Geliştirmeler (Roadmap)
+
+## Detection Engine
+
+-   Correlation engine
+-   MITRE ATT&CK mapping
+-   Sigma rule import
+
+## Analytics
+
+-   UEBA anomaly scoring
+-   Behavior baselines
+-   Risk heatmaps
+
+## Investigation
+
+-   Timeline investigation
+-   Evidence collection
+-   Case management
+
+## Threat Intelligence
+
+-   IOC feeds
+-   reputation lookups
+-   automatic enrichment
+
+## SOC Automation
+
+-   automated response
+-   containment workflows
+-   SOAR style playbooks
+
+------------------------------------------------------------------------
+
+# 🧭 Projenin Nihai Hedefi
+
+SolidTrace şu seviyeye ulaşmayı hedeflemektedir:
+
+    SIEM
+    +
+    UEBA
+    +
+    XDR
+    +
+    SOC Platform
+
+Referans ürünler:
+
+-   Splunk
+-   Microsoft Sentinel
+-   Elastic Security
+-   Wazuh
+
+------------------------------------------------------------------------
+
+# 👨‍💻 Proje Sahibi
+
+Yunus Yıldız\
+https://github.com/yyunusyildizz/solidtrace
+
+------------------------------------------------------------------------
+
+# 📄 License
 
 MIT License
