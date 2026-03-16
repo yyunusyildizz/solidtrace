@@ -1,9 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Monitor, RefreshCw, Search, ShieldAlert, User, Wifi, WifiOff } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { HostLastResponseActions } from "@/components/soc/host-last-response-actions";
+import {
+  Monitor,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  User,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 import { Panel } from "@/components/soc/ui/panel";
+import { HostResponseActions } from "@/components/soc/host-response-actions";
 import { getAssets, type AssetListItemResponse } from "@/lib/api/dashboard";
+import { clearAuthSession, getToken } from "@/lib/auth";
 
 function fmtDate(value?: string | null) {
   if (!value) return "—";
@@ -46,25 +58,74 @@ function statusBadge(status: AssetListItemResponse["online_status"]) {
   return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400";
 }
 
+function SummaryCard({
+  title,
+  value,
+  hint,
+  icon,
+}: {
+  title: string;
+  value: number;
+  hint: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div
+      className="rounded-3xl border p-4"
+      style={{
+        background: "var(--panel-strong)",
+        borderColor: "var(--border)",
+        boxShadow: "var(--shadow-soft)",
+      }}
+    >
+      <div className="mb-3 flex items-center justify-between">
+        <div
+          className="text-[11px] font-bold uppercase tracking-[0.22em]"
+          style={{ color: "var(--muted)" }}
+        >
+          {title}
+        </div>
+        <div style={{ color: "var(--muted)" }}>{icon}</div>
+      </div>
+      <div className="text-3xl font-black tracking-tight">{value}</div>
+      <div className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+        {hint}
+      </div>
+    </div>
+  );
+}
+
 export default function AssetsPage() {
+  const router = useRouter();
+
   const [assets, setAssets] = useState<AssetListItemResponse[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "online" | "offline" | "unknown">("ALL");
-
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("soc_token") || undefined : undefined;
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "online" | "offline" | "unknown">(
+    "ALL",
+  );
 
   const loadAssets = async () => {
     setLoading(true);
     setError("");
+
     try {
+      const token = getToken();
+      if (!token) {
+        router.replace("/login?next=/assets");
+        return;
+      }
+
       const rows = await getAssets(token);
       setAssets(rows);
     } catch (err) {
-      console.error(err);
+      if (err instanceof Error && err.message.includes("Not authenticated")) {
+        clearAuthSession();
+        router.replace("/login?next=/assets");
+        return;
+      }
       setError("Asset listesi alınamadı.");
     } finally {
       setLoading(false);
@@ -73,7 +134,6 @@ export default function AssetsPage() {
 
   useEffect(() => {
     loadAssets();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filteredAssets = useMemo(() => {
@@ -111,6 +171,21 @@ export default function AssetsPage() {
 
   return (
     <div className="grid gap-6">
+      <div>
+        <div
+          className="text-[11px] font-bold uppercase tracking-[0.24em]"
+          style={{ color: "var(--muted)" }}
+        >
+          Asset Visibility
+        </div>
+        <div className="mt-2 text-2xl font-black tracking-tight">
+          Inventory, heartbeat health and risk visibility for managed hosts
+        </div>
+        <div className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
+          SOC-enriched inventory with risk, alert counts and recent user context.
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <SummaryCard title="Total Assets" value={summary.total} hint="Toplam agent" icon={<Monitor size={15} />} />
         <SummaryCard title="Online" value={summary.online} hint="Aktif görünen host" icon={<Wifi size={15} />} />
@@ -121,11 +196,16 @@ export default function AssetsPage() {
 
       <Panel
         title="Asset Inventory"
-        subtitle="SOC-enriched host görünürlüğü"
+        subtitle="Managed host estate with status, ownership, alert context and response actions"
         action={
           <button
             onClick={loadAssets}
-            className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-700 transition hover:bg-zinc-50 dark:border-white/10 dark:text-zinc-200 dark:hover:bg-white/[0.05]"
+            className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition"
+            style={{
+              borderColor: "var(--border-strong)",
+              background: "var(--surface-1)",
+              color: "var(--foreground)",
+            }}
           >
             <RefreshCw size={14} />
             Yenile
@@ -139,14 +219,24 @@ export default function AssetsPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="hostname, os, ip, user..."
-              className="w-full rounded-2xl border border-zinc-200 bg-white px-10 py-3 text-sm outline-none transition focus:border-zinc-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-white dark:focus:border-white/20"
+              className="w-full rounded-2xl border px-10 py-3 text-sm outline-none transition"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+                color: "var(--foreground)",
+              }}
             />
           </div>
 
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-            className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.03]"
+            className="rounded-2xl border px-4 py-3 text-sm outline-none"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-0)",
+              color: "var(--foreground)",
+            }}
           >
             <option value="ALL">All Status</option>
             <option value="online">Online</option>
@@ -162,99 +252,120 @@ export default function AssetsPage() {
         ) : null}
 
         {loading ? (
-          <div className="text-sm text-zinc-500 dark:text-zinc-400">Assetler yükleniyor...</div>
+          <div
+            className="rounded-2xl border p-6 text-sm"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-1)",
+              color: "var(--muted)",
+            }}
+          >
+            Assetler yükleniyor...
+          </div>
         ) : filteredAssets.length === 0 ? (
-          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-8 text-center text-sm text-zinc-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-zinc-400">
+          <div
+            className="rounded-2xl border p-8 text-center text-sm"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-1)",
+              color: "var(--muted)",
+            }}
+          >
             Gösterilecek asset yok.
           </div>
         ) : (
-          <div className="overflow-hidden rounded-2xl border border-zinc-200 dark:border-white/10">
-            <div className="grid grid-cols-[1.2fr_0.55fr_0.65fr_0.65fr_0.55fr_0.8fr] gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-zinc-400">
-              <div>Host / OS</div>
-              <div>Status</div>
-              <div>Last Seen</div>
-              <div>User / IP</div>
-              <div>Alerts</div>
-              <div>Risk</div>
-            </div>
-
+          <div className="space-y-4">
             {filteredAssets.map((asset) => (
               <div
                 key={asset.id}
-                className="grid grid-cols-[1.2fr_0.55fr_0.65fr_0.65fr_0.55fr_0.8fr] gap-3 border-b border-zinc-200 px-4 py-4 text-left last:border-b-0 dark:border-white/10"
+                className="rounded-2xl border p-4"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-0)",
+                }}
               >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold">{asset.hostname}</div>
-                  <div className="mt-1 truncate text-xs text-zinc-500 dark:text-zinc-400">
-                    {asset.os_name || "OS bilinmiyor"} · v{asset.agent_version || "?"}
+                <div className="grid gap-4 xl:grid-cols-[1.1fr_0.5fr_0.7fr_0.7fr_0.5fr_0.8fr]">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">{asset.hostname}</div>
+                    <div className="mt-1 truncate text-xs" style={{ color: "var(--muted)" }}>
+                      {asset.os_name || "OS bilinmiyor"} · v{asset.agent_version || "?"}
+                    </div>
+                  </div>
+
+                  <div className="pt-0.5">
+                    <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusBadge(asset.online_status)}`}>
+                      {asset.online_status}
+                    </span>
+                  </div>
+
+                  <div className="text-xs" style={{ color: "var(--muted)" }}>
+                    <div>{relativeTime(asset.last_seen)}</div>
+                    <div className="mt-1">{fmtDate(asset.last_seen)}</div>
+                  </div>
+
+                  <div className="text-xs" style={{ color: "var(--muted)" }}>
+                    <div className="inline-flex max-w-full items-center gap-1 truncate">
+                      <User size={12} />
+                      {asset.last_user || "—"}
+                    </div>
+                    <div className="mt-1 truncate">{asset.last_ip || "—"}</div>
+                  </div>
+
+                  <div className="text-sm font-bold">
+                    {asset.total_alerts}
+                    <div className="mt-1 text-xs font-normal" style={{ color: "var(--muted)" }}>
+                      C:{asset.critical_count} H:{asset.high_count}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-bold">{asset.max_risk_score || 0}</div>
+                    <div className="mt-2 h-2 rounded-full" style={{ background: "var(--surface-2)" }}>
+                      <div
+                        className={`h-2 rounded-full ${riskClass(asset.max_risk_score)}`}
+                        style={{ width: `${Math.min(100, Number(asset.max_risk_score || 0))}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
 
-                <div className="pt-0.5">
-                  <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusBadge(asset.online_status)}`}>
-                    {asset.online_status}
-                  </span>
-                </div>
-
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                  <div>{relativeTime(asset.last_seen)}</div>
-                  <div className="mt-1">{fmtDate(asset.last_seen)}</div>
-                </div>
-
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                  <div className="truncate inline-flex items-center gap-1">
-                    <User size={12} />
-                    {asset.last_user || "—"}
+                {/* YENI EKLENEN/GÜNCELLENEN RESPONSE ACTIONS BÖLÜMÜ */}
+                <div
+                  className="mt-4 border-t pt-4"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  <div
+                    className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em]"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Response Actions
                   </div>
-                  <div className="mt-1 truncate">{asset.last_ip || "—"}</div>
+                  <HostResponseActions
+                    hostname={asset.hostname}
+                    compact
+                    onActionComplete={loadAssets}
+                  />
                 </div>
 
-                <div className="text-sm font-bold">
-                  {asset.total_alerts}
-                  <div className="mt-1 text-xs font-normal text-zinc-500 dark:text-zinc-400">
-                    C:{asset.critical_count} H:{asset.high_count}
+                <div
+                  className="mt-4 border-t pt-4"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  <div
+                    className="mb-2 text-[11px] font-bold uppercase tracking-[0.2em]"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Last Response Actions
                   </div>
+                  <HostLastResponseActions hostname={asset.hostname} />
                 </div>
+                {/* ------------------------------------------------ */}
 
-                <div>
-                  <div className="text-sm font-bold">{asset.max_risk_score || 0}</div>
-                  <div className="mt-2 h-2 rounded-full bg-zinc-200 dark:bg-white/10">
-                    <div
-                      className={`h-2 rounded-full ${riskClass(asset.max_risk_score)}`}
-                      style={{ width: `${Math.min(100, Number(asset.max_risk_score || 0))}%` }}
-                    />
-                  </div>
-                </div>
               </div>
             ))}
           </div>
         )}
       </Panel>
-    </div>
-  );
-}
-
-function SummaryCard({
-  title,
-  value,
-  hint,
-  icon,
-}: {
-  title: string;
-  value: number;
-  hint: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500 dark:text-zinc-400">
-          {title}
-        </div>
-        <div className="text-zinc-400 dark:text-zinc-500">{icon}</div>
-      </div>
-      <div className="text-3xl font-black tracking-tight">{value}</div>
-      <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{hint}</div>
     </div>
   );
 }

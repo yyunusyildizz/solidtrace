@@ -7,9 +7,11 @@ Agent komutları ve event ingest endpoint'leri
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import socket
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -49,6 +51,10 @@ MAX_SEVERITY_LEN = int(os.getenv("INGEST_MAX_SEVERITY_LEN", "32"))
 MIN_ALERT_SCORE = int(os.getenv("MIN_ALERT_SCORE", "50"))
 ALLOW_LOCAL_PROCESS_ENUM = os.getenv("ALLOW_LOCAL_PROCESS_ENUM", "false").lower() == "true"
 
+_EVENT_DEDUP_CACHE: dict[str, float] = {}
+_EVENT_DEDUP_WINDOW_SECONDS = int(os.getenv("EVENT_DEDUP_WINDOW_SECONDS", "20"))
+_EVENT_DEDUP_MAX_ITEMS = int(os.getenv("EVENT_DEDUP_MAX_ITEMS", "10000"))
+
 
 def set_engines(correlator, sigma, ueba, cef):
     global _correlator, _sigma_engine, _ueba_engine, _cef_output
@@ -73,6 +79,10 @@ def _utcnow() -> datetime:
 
 def _now_iso() -> str:
     return _utcnow().isoformat()
+
+
+def _new_command_id(action: str, hostname: str) -> str:
+    return f"cmd-{action.lower()}-{hostname.lower()}-{uuid.uuid4().hex[:12]}"
 
 
 def _to_str(value: Any, max_len: int, default: str = "") -> str:
@@ -102,6 +112,47 @@ def _safe_action_request_dict(req: ActionRequest) -> Dict[str, Any]:
     return req.dict()
 
 
+def _cleanup_event_dedup_cache() -> None:
+    now = time.time()
+    expired = [k for k, v in _EVENT_DEDUP_CACHE.items() if v <= now]
+    for k in expired:
+        _EVENT_DEDUP_CACHE.pop(k, None)
+
+    if len(_EVENT_DEDUP_CACHE) > _EVENT_DEDUP_MAX_ITEMS:
+        for key in list(_EVENT_DEDUP_CACHE.keys())[:1000]:
+            _EVENT_DEDUP_CACHE.pop(key, None)
+
+
+def _event_fingerprint(event_data: Dict[str, Any], tenant_id: Optional[str]) -> str:
+    raw = "|".join(
+        [
+            str(tenant_id or ""),
+            str(event_data.get("hostname") or ""),
+            str(event_data.get("type") or ""),
+            str(event_data.get("user") or ""),
+            str(event_data.get("pid") or ""),
+            str(event_data.get("command_line") or "")[:300],
+            str(event_data.get("details") or "")[:500],
+            str(event_data.get("serial") or ""),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_duplicate_event(event_data: Dict[str, Any], tenant_id: Optional[str]) -> bool:
+    _cleanup_event_dedup_cache()
+
+    fp = _event_fingerprint(event_data, tenant_id)
+    now = time.time()
+    exp = _EVENT_DEDUP_CACHE.get(fp)
+
+    if exp and exp > now:
+        return True
+
+    _EVENT_DEDUP_CACHE[fp] = now + _EVENT_DEDUP_WINDOW_SECONDS
+    return False
+
+
 def _normalize_event(event: EventBase) -> Dict[str, Any]:
     return {
         "type": _to_str(event.type, MAX_TYPE_LEN),
@@ -111,7 +162,7 @@ def _normalize_event(event: EventBase) -> Dict[str, Any]:
         "details": _to_str(event.details, MAX_DETAILS_LEN),
         "command_line": _to_str(event.command_line, MAX_CMD_LEN),
         "serial": _to_str(event.serial, MAX_SERIAL_LEN),
-        "severity": _to_str(event.severity or "INFO", MAX_SEVERITY_LEN, default="INFO"),
+        "severity": _to_str(event.severity or "INFO", MAX_SEVERITY_LEN, default="INFO").upper(),
         "timestamp": event.timestamp,
     }
 
@@ -125,7 +176,11 @@ def _normalize_runtime_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
         "details": _to_str(event_data.get("details"), MAX_DETAILS_LEN),
         "command_line": _to_str(event_data.get("command_line"), MAX_CMD_LEN),
         "serial": _to_str(event_data.get("serial"), MAX_SERIAL_LEN),
-        "severity": _to_str(event_data.get("severity") or "INFO", MAX_SEVERITY_LEN, default="INFO"),
+        "severity": _to_str(
+            event_data.get("severity") or "INFO",
+            MAX_SEVERITY_LEN,
+            default="INFO",
+        ).upper(),
         "timestamp": event_data.get("timestamp"),
     }
 
@@ -172,6 +227,30 @@ async def _write_action_audit(
         db.close()
 
 
+def _build_alert_payload(alert: AlertModel) -> dict:
+    if hasattr(alert, "to_dict"):
+        return alert.to_dict()
+
+    return {
+        "id": alert.id,
+        "created_at": alert.created_at,
+        "hostname": alert.hostname,
+        "username": alert.username,
+        "type": alert.type,
+        "risk_score": alert.risk_score,
+        "rule": alert.rule,
+        "severity": alert.severity,
+        "details": alert.details,
+        "command_line": alert.command_line,
+        "pid": alert.pid,
+        "serial": getattr(alert, "serial", None),
+        "tenant_id": getattr(alert, "tenant_id", None),
+        "status": getattr(alert, "status", "open"),
+        "assigned_to": getattr(alert, "assigned_to", None),
+        "analyst_note": getattr(alert, "analyst_note", None),
+    }
+
+
 @router.post("/api/v1/ingest")
 async def ingest_event(
     events: List[EventBase],
@@ -203,6 +282,17 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
     db = SessionLocal()
     try:
         event_data = _normalize_runtime_event(event_data)
+
+        if _is_duplicate_event(event_data, tenant_id):
+            logger.info(
+                "event_deduplicated tenant=%s host=%s type=%s pid=%s",
+                tenant_id,
+                event_data.get("hostname"),
+                event_data.get("type"),
+                event_data.get("pid"),
+            )
+            return
+
         active_rules = _query_rules_for_tenant(db, tenant_id)
 
         raw_details = event_data.get("details") or ""
@@ -220,6 +310,7 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
         score = 10
         rule_name = "Normal Activity"
         current_sev = event_data.get("severity") or "INFO"
+
         full_text = (
             f"{final_details} "
             f"{event_data.get('command_line') or ''} "
@@ -232,7 +323,7 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
             if keyword and keyword in full_text:
                 score = int(rule.risk_score or 0)
                 rule_name = rule.name or "Custom Rule Match"
-                current_sev = rule.severity or current_sev
+                current_sev = (rule.severity or current_sev).upper()
                 matched = True
                 break
 
@@ -256,24 +347,53 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
             "tenant_id": tenant_id,
             "rule": rule_name,
             "description": final_details,
+            "command_line": event_data.get("command_line") or "",
+            "serial": event_data.get("serial") or "",
         }
+
+        sigma_promoted = False
 
         if _correlator:
             await _correlator.process_event(corr_event)
+
         if _sigma_engine:
-            asyncio.create_task(_sigma_engine.process_event({**corr_event, "details": final_details}))
+            try:
+                sigma_matches = await _sigma_engine.process_event(
+                    {**corr_event, "details": final_details}
+                )
+                if sigma_matches:
+                    top_sigma = max(
+                        sigma_matches,
+                        key=lambda m: int(m.get("risk", {}).get("score", 0) or 0),
+                    )
+                    sigma_score = int(top_sigma.get("risk", {}).get("score", 75) or 75)
+                    sigma_sev = str(top_sigma.get("severity", "HIGH")).upper()
+                    sigma_rule = str(top_sigma.get("rule", "Sigma Detection Match")).strip()
+
+                    score = max(score, sigma_score)
+                    if current_sev != "CRITICAL":
+                        current_sev = sigma_sev if sigma_sev in {"LOW", "MEDIUM", "HIGH", "CRITICAL"} else "HIGH"
+                    if rule_name == "Normal Activity":
+                        rule_name = sigma_rule
+
+                    sigma_promoted = True
+            except Exception as exc:
+                logger.warning("sigma_processing_failed tenant=%s error=%s", tenant_id, exc)
+
         if _ueba_engine:
             asyncio.create_task(_ueba_engine.process_event(corr_event))
+
         if _cef_output:
             _cef_output.send({**corr_event, "timestamp": event_data.get("timestamp")})
 
         if score < MIN_ALERT_SCORE:
             logger.info(
-                "event_below_alert_threshold tenant=%s host=%s type=%s risk_score=%s",
+                "event_below_alert_threshold tenant=%s host=%s type=%s risk_score=%s sigma_promoted=%s",
                 tenant_id,
                 event_data.get("hostname"),
                 event_data.get("type"),
                 score,
+                sigma_promoted,
             )
             return
 
@@ -296,19 +416,29 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
             resolved_at=None,
             resolved_by=None,
         )
+
         db.add(alert)
         db.commit()
+        db.refresh(alert)
 
-        await broadcast({"type": "alert", "data": alert.to_dict()})
+        await broadcast(
+            {
+                "type": "alert",
+                "timestamp": _now_iso(),
+                "data": _build_alert_payload(alert),
+            }
+        )
 
         logger.info(
-            "alert_created tenant=%s host=%s type=%s risk_score=%s rule=%s",
+            "alert_created tenant=%s host=%s type=%s risk_score=%s rule=%s sigma_promoted=%s",
             tenant_id,
             event_data.get("hostname"),
             event_data.get("type"),
             score,
             rule_name,
+            sigma_promoted,
         )
+
     except Exception as exc:
         db.rollback()
         logger.exception("queue_event_processing_failed tenant=%s error=%s", tenant_id, exc)
@@ -343,21 +473,25 @@ async def analyze_host(
     tenant_id: Optional[str] = Depends(get_current_tenant_id),
 ):
     hostname = _validated_hostname(req.hostname)
+    command_id = _new_command_id("ANALYZE_HOST", hostname)
 
-    await broadcast(
-        {
-            "type": "ACTION_LOG",
-            "message": f"🔍 Analiz: {hostname} | Kural: {req.rule} | Kullanıcı: {current_user}",
-        }
+    await broadcast_command(
+        "ANALYZE_HOST",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+        rule=_to_str(req.rule, 255),
     )
 
     logger.info(
-        "action_analyze_host request_id=%s tenant=%s host=%s user=%s rule=%s",
+        "action_analyze_host request_id=%s tenant=%s host=%s user=%s rule=%s command_id=%s",
         _get_request_id(request),
         tenant_id,
         hostname,
         current_user,
         _to_str(req.rule, 255),
+        command_id,
     )
 
     bg.add_task(perform_groq_analysis, _safe_action_request_dict(req), broadcast)
@@ -368,7 +502,12 @@ async def analyze_host(
         detail=req.rule or "",
         tenant_id=tenant_id,
     )
-    return {"status": "started", "message": "AI analizi arka planda çalışıyor"}
+    return {
+        "status": "sent",
+        "action": "ANALYZE_HOST",
+        "command_id": command_id,
+        "message": "AI analizi ve agent komutu başlatıldı",
+    }
 
 
 @router.post("/api/actions/kill")
@@ -380,15 +519,25 @@ async def kill_process(
 ):
     hostname = _validated_hostname(req.hostname)
     pid = _validated_pid(req.pid)
+    command_id = _new_command_id("KILL_PROCESS", hostname)
 
-    await broadcast_command("KILL_PROCESS", hostname, target_pid=pid)
+    await broadcast_command(
+        "KILL_PROCESS",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+        target_pid=pid,
+    )
+
     logger.warning(
-        "action_kill_process request_id=%s tenant=%s host=%s pid=%s user=%s",
+        "action_kill_process request_id=%s tenant=%s host=%s pid=%s user=%s command_id=%s",
         _get_request_id(request),
         tenant_id,
         hostname,
         pid,
         current_user,
+        command_id,
     )
 
     await _write_action_audit(
@@ -398,7 +547,7 @@ async def kill_process(
         detail=req.rule or "",
         tenant_id=tenant_id,
     )
-    return {"status": "sent", "action": "KILL_PROCESS"}
+    return {"status": "sent", "action": "KILL_PROCESS", "command_id": command_id}
 
 
 @router.post("/api/actions/isolate")
@@ -409,14 +558,23 @@ async def isolate_host(
     tenant_id: Optional[str] = Depends(get_current_tenant_id),
 ):
     hostname = _validated_hostname(req.hostname)
+    command_id = _new_command_id("ISOLATE_HOST", hostname)
 
-    await broadcast_command("ISOLATE_HOST", hostname)
+    await broadcast_command(
+        "ISOLATE_HOST",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
     logger.warning(
-        "action_isolate_host request_id=%s tenant=%s host=%s user=%s",
+        "action_isolate_host request_id=%s tenant=%s host=%s user=%s command_id=%s",
         _get_request_id(request),
         tenant_id,
         hostname,
         current_user,
+        command_id,
     )
 
     await _write_action_audit(
@@ -426,7 +584,7 @@ async def isolate_host(
         detail=req.rule or "",
         tenant_id=tenant_id,
     )
-    return {"status": "sent", "action": "ISOLATE_HOST"}
+    return {"status": "sent", "action": "ISOLATE_HOST", "command_id": command_id}
 
 
 @router.post("/api/actions/unisolate")
@@ -437,14 +595,24 @@ async def unisolate_host(
     tenant_id: Optional[str] = Depends(get_current_tenant_id),
 ):
     hostname = _validated_hostname(req.hostname)
+    logger.warning("### UNISOLATE ROUTE HIT ### hostname=%s", hostname)
+    command_id = _new_command_id("UNISOLATE_HOST", hostname)
 
-    await broadcast_command("UNISOLATE_HOST", hostname)
+    await broadcast_command(
+        "UNISOLATE_HOST",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
     logger.warning(
-        "action_unisolate_host request_id=%s tenant=%s host=%s user=%s",
+        "action_unisolate_host request_id=%s tenant=%s host=%s user=%s command_id=%s",
         _get_request_id(request),
         tenant_id,
         hostname,
         current_user,
+        command_id,
     )
 
     await _write_action_audit(
@@ -454,7 +622,7 @@ async def unisolate_host(
         detail=req.rule or "",
         tenant_id=tenant_id,
     )
-    return {"status": "sent", "action": "UNISOLATE_HOST"}
+    return {"status": "sent", "action": "UNISOLATE_HOST", "command_id": command_id}
 
 
 @router.post("/api/actions/usb_disable")
@@ -465,20 +633,23 @@ async def usb_disable(
     tenant_id: Optional[str] = Depends(get_current_tenant_id),
 ):
     hostname = _validated_hostname(req.hostname)
+    command_id = _new_command_id("USB_DISABLE", hostname)
 
-    await broadcast_command("USB_DISABLE", hostname)
-    await broadcast(
-        {
-            "type": "ACTION_LOG",
-            "message": f"🔌 USB Devre Dışı: {hostname} (by {current_user})",
-        }
+    await broadcast_command(
+        "USB_DISABLE",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
     )
+
     logger.warning(
-        "action_usb_disable request_id=%s tenant=%s host=%s user=%s",
+        "action_usb_disable request_id=%s tenant=%s host=%s user=%s command_id=%s",
         _get_request_id(request),
         tenant_id,
         hostname,
         current_user,
+        command_id,
     )
 
     await _write_action_audit(
@@ -488,7 +659,7 @@ async def usb_disable(
         detail=req.rule or "",
         tenant_id=tenant_id,
     )
-    return {"status": "sent", "action": "USB_DISABLE"}
+    return {"status": "sent", "action": "USB_DISABLE", "command_id": command_id}
 
 
 @router.post("/api/actions/usb_enable")
@@ -499,20 +670,23 @@ async def usb_enable(
     tenant_id: Optional[str] = Depends(get_current_tenant_id),
 ):
     hostname = _validated_hostname(req.hostname)
+    command_id = _new_command_id("USB_ENABLE", hostname)
 
-    await broadcast_command("USB_ENABLE", hostname)
-    await broadcast(
-        {
-            "type": "ACTION_LOG",
-            "message": f"🔌 USB Aktif: {hostname} (by {current_user})",
-        }
+    await broadcast_command(
+        "USB_ENABLE",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
     )
+
     logger.warning(
-        "action_usb_enable request_id=%s tenant=%s host=%s user=%s",
+        "action_usb_enable request_id=%s tenant=%s host=%s user=%s command_id=%s",
         _get_request_id(request),
         tenant_id,
         hostname,
         current_user,
+        command_id,
     )
 
     await _write_action_audit(
@@ -522,7 +696,7 @@ async def usb_enable(
         detail=req.rule or "",
         tenant_id=tenant_id,
     )
-    return {"status": "sent", "action": "USB_ENABLE"}
+    return {"status": "sent", "action": "USB_ENABLE", "command_id": command_id}
 
 
 @router.get("/api/v1/processes/{hostname}")
@@ -580,6 +754,16 @@ async def get_processes(
         )
         return {"hostname": hostname, "source": "local", "processes": processes[:200]}
 
+    command_id = _new_command_id("SCAN_PROCESSES", hostname)
+
+    await broadcast_command(
+        "SCAN_PROCESSES",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
     db = SessionLocal()
     try:
         cutoff = (_utcnow() - timedelta(seconds=120)).isoformat()
@@ -612,23 +796,60 @@ async def get_processes(
                     }
                 )
 
-        await broadcast(
-            {
-                "type": "COMMAND",
-                "action": "SCAN_PROCESSES",
-                "target_hostname": hostname,
-            }
-        )
-
         logger.info(
-            "process_list_requested request_id=%s tenant=%s host=%s user=%s source=%s process_count=%s",
+            "process_list_requested request_id=%s tenant=%s host=%s user=%s source=%s process_count=%s command_id=%s",
             _get_request_id(request),
             tenant_id,
             hostname,
             current_user,
             "db_recent",
             len(processes),
+            command_id,
         )
-        return {"hostname": hostname, "source": "db_recent", "processes": processes}
+        return {
+            "hostname": hostname,
+            "source": "db_recent",
+            "command_id": command_id,
+            "processes": processes,
+        }
+    finally:
+        db.close()
+
+@router.get("/api/commands")
+async def list_command_executions(
+    limit: int = 50,
+    hostname: Optional[str] = None,
+    request: Request = None,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    from app.database.db_manager import CommandExecutionModel
+
+    db = SessionLocal()
+    try:
+        q = db.query(CommandExecutionModel)
+
+        if tenant_id and hasattr(CommandExecutionModel, "tenant_id"):
+            q = q.filter(CommandExecutionModel.tenant_id == tenant_id)
+
+        if hostname:
+            q = q.filter(CommandExecutionModel.target_hostname == hostname.strip())
+
+        rows = (
+            q.order_by(CommandExecutionModel.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
+
+        logger.info(
+            "command_history_requested request_id=%s tenant=%s user=%s hostname=%s count=%s",
+            _get_request_id(request),
+            tenant_id,
+            current_user,
+            hostname,
+            len(rows),
+        )
+
+        return [row.to_dict() for row in rows]
     finally:
         db.close()

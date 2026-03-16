@@ -1,59 +1,71 @@
 @import "tailwindcss";
 
-/* 🎨 ELITE THEME VARIABLES */
-:root {
-  --background: #020202; /* Saf Siyah yerine derin kömür siyahı */
-  --foreground: #ededed;
-  
-  /* Cyberpunk Renk Paleti */
-  --accent-red: #dc2626;
-  --accent-orange: #f59e0b;
-  --accent-indigo: #6366f1;
-  --glass-bg: rgba(15, 23, 42, 0.4);
-  --glass-border: rgba(255, 255, 255, 0.05);
+:root,
+[data-theme="light"] {
+  --background: #d9e2ec;
+  --foreground: #172435;
+
+  --surface-0: #eaf0f6;
+  --surface-1: #e2e9f1;
+  --surface-2: #d7e0ea;
+  --surface-3: #c9d4e0;
+
+  --panel: rgba(229, 236, 244, 0.84);
+  --panel-strong: rgba(223, 231, 240, 0.94);
+  --sidebar: rgba(211, 221, 232, 0.98);
+  --header: rgba(220, 229, 238, 0.88);
+
+  --border: rgba(23, 36, 53, 0.08);
+  --border-strong: rgba(23, 36, 53, 0.15);
+
+  --muted: #617286;
+  --muted-strong: #44566a;
+
+  --success: #159a6f;
+  --warning: #c47a14;
+  --danger: #cb4454;
+  --info: #2c64da;
+
+  --glass-blur: 18px;
+  --shadow-soft: 0 8px 24px rgba(15, 23, 42, 0.05);
+  --shadow-panel: 0 12px 34px rgba(15, 23, 42, 0.08);
 }
 
-/* 🚀 GLOBAL SCROLLBAR REMOVAL */
-/* Tüm tarayıcılarda kaydırma çubuklarını gizler ama kaydırma işlevini bozmaz */
-@layer base {
-  html, body {
-    scrollbar-width: none !important; /* Firefox */
-    -ms-overflow-style: none !important; /* IE/Edge */
-  }
+[data-theme="dark"] {
+  --background: #07101c;
+  --foreground: #e5eefc;
 
-  ::-webkit-scrollbar {
-    display: none !important; /* Chrome/Safari/Brave */
-  }
+  --surface-0: #0c1522;
+  --surface-1: #111b2b;
+  --surface-2: #162234;
+  --surface-3: #1d2a3f;
 
-  body {
-    background: var(--background);
-    color: var(--foreground);
-    /* Dashboard için en iyi font her zaman Mono'dur */
-    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    overflow-x: hidden;
-  }
+  --panel: rgba(15, 24, 38, 0.86);
+  --panel-strong: rgba(15, 24, 38, 0.96);
+  --sidebar: rgba(9, 16, 26, 0.94);
+  --header: rgba(12, 20, 32, 0.82);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --muted: #94a3b8;
+  --muted-strong: #cbd5e1;
+
+  --success: #34d399;
+  --warning: #f59e0b;
+  --danger: #f87171;
+  --info: #60a5fa;
+
+  --shadow-soft: 0 8px 30px rgba(0, 0, 0, 0.24);
+  --shadow-panel: 0 14px 40px rgba(0, 0, 0, 0.3);
 }
 
-/* ✨ GLASSMORPHISM UTILITY */
-/* Bunu tüm projedeki div'lerde 'glass-effect' class'ı ile kullanabilirsin */
-@layer utilities {
-  .glass-effect {
-    background: var(--glass-bg);
-    backdrop-filter: blur(16px);
-    border: 1px solid var(--glass-border);
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.8);
-  }
+* {
+  box-sizing: border-box;
+}
 
-  /* 🔴 NEON GLOWS */
-  .neon-red {
-    box-shadow: 0 0 15px rgba(220, 38, 38, 0.2);
-    border: 1px solid rgba(220, 38, 38, 0.3);
-  }
-
-  .neon-indigo {
-    box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
-    border: 1px solid rgba(99, 102, 241, 0.3);
-  }
+html {
+  scroll-behavior: smooth;
 }
 
 html,
@@ -62,9 +74,170 @@ body {
 }
 
 body {
-  font-feature-settings: "rlig" 1, "calt" 1;
+  background:
+    radial-gradient(circle at top left, rgba(44, 100, 218, 0.05), transparent 24%),
+    radial-gradient(circle at top right, rgba(13, 148, 136, 0.04), transparent 18%),
+    linear-gradient(180deg, var(--background), var(--background));
+  color: var(--foreground);
+  font-family:
+    var(--font-sans),
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease,
+    border-color 0.25s ease;
 }
 
-.dark body {
-  color-scheme: dark;
+code,
+pre,
+kbd,
+samp,
+.font-mono-ui {
+  font-family:
+    var(--font-mono),
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    monospace;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.22);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+@layer utilities {
+  .glass-effect {
+    background: var(--panel);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .panel-surface {
+    background: var(--panel-strong);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-panel);
+  }
+
+  .shell-sidebar {
+    background: var(--sidebar);
+    border-right: 1px solid var(--border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+  }
+
+  .shell-header {
+    background: var(--header);
+    border-color: var(--border);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+  }
+}
+
+/* -------- SINGLE-SHOT LIGHT MODE NORMALIZATION -------- */
+/* Projede çok kullanılan sert Tailwind yüzeylerini light modda sakinleştir */
+[data-theme="light"] .bg-white {
+  background-color: var(--surface-0) !important;
+}
+
+[data-theme="light"] .bg-zinc-50 {
+  background-color: var(--surface-1) !important;
+}
+
+[data-theme="light"] .bg-zinc-100 {
+  background-color: var(--surface-2) !important;
+}
+
+[data-theme="light"] .border-zinc-200 {
+  border-color: var(--border) !important;
+}
+
+[data-theme="light"] .border-zinc-300 {
+  border-color: var(--border-strong) !important;
+}
+
+[data-theme="light"] .text-zinc-900,
+[data-theme="light"] .text-zinc-800,
+[data-theme="light"] .text-zinc-700 {
+  color: var(--foreground) !important;
+}
+
+[data-theme="light"] .text-zinc-600,
+[data-theme="light"] .text-zinc-500,
+[data-theme="light"] .text-zinc-400 {
+  color: var(--muted) !important;
+}
+
+[data-theme="light"] .shadow-sm,
+[data-theme="light"] .shadow {
+  box-shadow: var(--shadow-soft) !important;
+}
+
+/* Light modda paneller çok ayrı ayrı kutu gibi patlamasın */
+[data-theme="light"] .rounded-2xl,
+[data-theme="light"] .rounded-3xl {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Input/select/textarea light mod rafinesi */
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
+  background-color: var(--surface-0);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+/* Scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }

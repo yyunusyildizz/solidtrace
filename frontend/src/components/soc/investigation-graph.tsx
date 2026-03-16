@@ -1,231 +1,389 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  Cpu,
+  Network,
   Server,
   Shield,
   User,
+  Waypoints,
 } from "lucide-react";
 
-type NodeType = "host" | "user" | "process" | "rule" | "alert";
+export type GraphNodeType = "alert" | "host" | "user" | "process" | "rule";
 
-export interface GraphNode {
+export interface InvestigationGraphNode {
   id: string;
-  label: string;
-  type: NodeType;
+  label?: string;
+  type: GraphNodeType;
   risk?: number;
   meta?: string;
 }
 
-export interface GraphEdge {
+export interface InvestigationGraphEdge {
   from: string;
   to: string;
   label?: string;
 }
 
 export interface InvestigationGraphData {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
+  nodes: InvestigationGraphNode[];
+  edges: InvestigationGraphEdge[];
 }
 
-function nodeStyle(type: NodeType) {
+function nodeTone(type: GraphNodeType) {
   switch (type) {
+    case "alert":
+      return "border-red-200 bg-red-50 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300";
     case "host":
-      return {
-        border: "border-sky-200 dark:border-sky-500/20",
-        bg: "bg-sky-50 dark:bg-sky-500/10",
-        text: "text-sky-700 dark:text-sky-300",
-        icon: <Server size={15} />,
-      };
+      return "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300";
     case "user":
-      return {
-        border: "border-violet-200 dark:border-violet-500/20",
-        bg: "bg-violet-50 dark:bg-violet-500/10",
-        text: "text-violet-700 dark:text-violet-300",
-        icon: <User size={15} />,
-      };
+      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300";
     case "process":
-      return {
-        border: "border-amber-200 dark:border-amber-500/20",
-        bg: "bg-amber-50 dark:bg-amber-500/10",
-        text: "text-amber-700 dark:text-amber-300",
-        icon: <Cpu size={15} />,
-      };
+      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300";
     case "rule":
-      return {
-        border: "border-red-200 dark:border-red-500/20",
-        bg: "bg-red-50 dark:bg-red-500/10",
-        text: "text-red-700 dark:text-red-300",
-        icon: <Shield size={15} />,
-      };
+      return "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/20 dark:bg-violet-500/10 dark:text-violet-300";
     default:
-      return {
-        border: "border-zinc-200 dark:border-white/10",
-        bg: "bg-zinc-50 dark:bg-white/[0.04]",
-        text: "text-zinc-700 dark:text-zinc-300",
-        icon: <AlertTriangle size={15} />,
-      };
+      return "border-zinc-200 bg-zinc-50 text-zinc-700 dark:border-white/10 dark:bg-white/[0.03] dark:text-zinc-300";
   }
 }
 
-function riskBarClass(risk?: number) {
-  const n = Number(risk || 0);
-  if (n >= 80) return "bg-red-500";
-  if (n >= 60) return "bg-orange-500";
-  if (n >= 40) return "bg-amber-500";
-  return "bg-emerald-500";
+function nodeIcon(type: GraphNodeType) {
+  switch (type) {
+    case "alert":
+      return <AlertTriangle size={14} />;
+    case "host":
+      return <Server size={14} />;
+    case "user":
+      return <User size={14} />;
+    case "rule":
+      return <Shield size={14} />;
+    default:
+      return <Waypoints size={14} />;
+  }
 }
 
-export default function InvestigationGraph({
-  data,
+function riskTone(risk?: number) {
+  const value = risk ?? 0;
+  if (value >= 80) return "text-red-500";
+  if (value >= 60) return "text-orange-500";
+  if (value >= 40) return "text-amber-500";
+  return "text-emerald-500";
+}
+
+function riskBar(risk?: number) {
+  const value = Math.max(0, Math.min(100, risk ?? 0));
+  if (value >= 80) return { width: `${value}%`, className: "bg-red-500" };
+  if (value >= 60) return { width: `${value}%`, className: "bg-orange-500" };
+  if (value >= 40) return { width: `${value}%`, className: "bg-amber-500" };
+  return { width: `${value}%`, className: "bg-emerald-500" };
+}
+
+function displayNodeLabel(node: InvestigationGraphNode) {
+  return node.label || `${node.type}:${node.id}`;
+}
+
+function MiniStat({
+  label,
+  value,
 }: {
-  data: InvestigationGraphData;
+  label: string;
+  value: string | number;
 }) {
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
-    data.nodes[0]?.id || null,
+  return (
+    <div
+      className="rounded-2xl border p-3"
+      style={{
+        borderColor: "var(--border)",
+        background: "color-mix(in srgb, var(--surface-1) 88%, transparent)",
+      }}
+    >
+      <div
+        className="text-[11px] font-bold uppercase tracking-[0.18em]"
+        style={{ color: "var(--muted)" }}
+      >
+        {label}
+      </div>
+      <div className="mt-2 text-lg font-black">{value}</div>
+    </div>
   );
+}
+
+export default function InvestigationGraph({ data }: { data: InvestigationGraphData }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedId(data.nodes[0]?.id ?? null);
+  }, [data]);
 
   const selectedNode = useMemo(
-    () => data.nodes.find((n) => n.id === selectedNodeId) || null,
-    [data.nodes, selectedNodeId],
+    () => data.nodes.find((node) => node.id === selectedId) ?? null,
+    [data.nodes, selectedId],
   );
 
-  const relatedEdges = useMemo(
-    () =>
-      data.edges.filter(
-        (e) => e.from === selectedNodeId || e.to === selectedNodeId,
-      ),
-    [data.edges, selectedNodeId],
-  );
+  const relatedEdges = useMemo(() => {
+    if (!selectedNode) return [];
+    return data.edges.filter(
+      (edge) => edge.from === selectedNode.id || edge.to === selectedNode.id,
+    );
+  }, [data.edges, selectedNode]);
 
-  const relatedNodeIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const edge of relatedEdges) {
-      ids.add(edge.from);
-      ids.add(edge.to);
-    }
-    return ids;
-  }, [relatedEdges]);
+  const stats = useMemo(() => {
+    return {
+      nodes: data.nodes.length,
+      edges: data.edges.length,
+      highRisk: data.nodes.filter((node) => (node.risk ?? 0) >= 70).length,
+    };
+  }, [data]);
+
+  if (!data.nodes.length) {
+    return (
+      <div
+        className="rounded-2xl border p-8 text-center text-sm"
+        style={{
+          borderColor: "var(--border)",
+          background: "var(--surface-1)",
+          color: "var(--muted)",
+        }}
+      >
+        Graph verisi bulunamadı.
+      </div>
+    );
+  }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-      <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-        <div className="mb-4">
-          <div className="text-sm font-black">Investigation Graph</div>
-          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Host, user, process, rule ve alert ilişkileri
+    <section
+      className="rounded-3xl border p-4"
+      style={{
+        borderColor: "var(--border)",
+        background: "var(--panel-strong)",
+        boxShadow: "var(--shadow-soft)",
+      }}
+    >
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-black tracking-tight">
+            <Network size={16} />
+            Investigation Graph
+          </div>
+          <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+            Entity relationships derived from the selected investigation alert.
           </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {data.nodes.map((node) => {
-            const style = nodeStyle(node.type);
-            const active = selectedNodeId === node.id;
-            const related = relatedNodeIds.has(node.id);
+        <div
+          className="inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-[0.18em]"
+          style={{
+            borderColor: "var(--border)",
+            background: "var(--surface-1)",
+            color: "var(--muted-strong)",
+          }}
+        >
+          <Waypoints size={12} />
+          Live Context
+        </div>
+      </div>
 
-            return (
-              <button
-                key={node.id}
-                onClick={() => setSelectedNodeId(node.id)}
-                className={`rounded-2xl border p-4 text-left transition ${
-                  active
-                    ? "border-zinc-900 bg-zinc-50 dark:border-white dark:bg-white/[0.06]"
-                    : related
-                      ? "border-zinc-300 bg-zinc-50/70 dark:border-white/20 dark:bg-white/[0.04]"
-                      : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.05]"
-                }`}
-              >
-                <div
-                  className={`inline-flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-xs font-semibold ${style.border} ${style.bg} ${style.text}`}
+      <div className="mb-4 grid gap-3 md:grid-cols-3">
+        <MiniStat label="Nodes" value={stats.nodes} />
+        <MiniStat label="Edges" value={stats.edges} />
+        <MiniStat label="High Risk" value={stats.highRisk} />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+        <div
+          className="rounded-3xl border p-4"
+          style={{
+            borderColor: "var(--border)",
+            background: "color-mix(in srgb, var(--surface-1) 86%, transparent)",
+          }}
+        >
+          <div
+            className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Entity List
+          </div>
+
+          <div className="space-y-3">
+            {data.nodes.map((node) => {
+              const active = selectedId === node.id;
+              const bar = riskBar(node.risk);
+
+              return (
+                <button
+                  key={node.id}
+                  onClick={() => setSelectedId(node.id)}
+                  className="w-full rounded-2xl border p-4 text-left transition"
+                  style={
+                    active
+                      ? {
+                          borderColor: "var(--foreground)",
+                          background: "color-mix(in srgb, var(--surface-1) 92%, transparent)",
+                        }
+                      : {
+                          borderColor: "var(--border)",
+                          background: "var(--surface-0)",
+                        }
+                  }
                 >
-                  {style.icon}
-                  <span className="uppercase tracking-wide">{node.type}</span>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${nodeTone(node.type)}`}
+                        >
+                          {nodeIcon(node.type)}
+                          {node.type}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 truncate text-sm font-semibold">
+                        {displayNodeLabel(node)}
+                      </div>
+                      <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                        {node.meta || "No metadata"}
+                      </div>
+                    </div>
+
+                    <div className={`text-sm font-black ${riskTone(node.risk)}`}>
+                      {node.risk ?? 0}
+                    </div>
+                  </div>
+
+                  <div
+                    className="mt-3 h-2 rounded-full"
+                    style={{ background: "var(--surface-2)" }}
+                  >
+                    <div
+                      className={`h-2 rounded-full ${bar.className}`}
+                      style={{ width: bar.width }}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div
+          className="rounded-3xl border p-4"
+          style={{
+            borderColor: "var(--border)",
+            background: "color-mix(in srgb, var(--surface-1) 86%, transparent)",
+          }}
+        >
+          <div
+            className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Selected Entity
+          </div>
+
+          {selectedNode ? (
+            <div className="space-y-4">
+              <section
+                className="rounded-2xl border p-4"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-0)",
+                }}
+              >
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${nodeTone(selectedNode.type)}`}
+                  >
+                    {nodeIcon(selectedNode.type)}
+                    {selectedNode.type}
+                  </span>
                 </div>
 
-                <div className="mt-3 text-sm font-semibold">{node.label}</div>
+                <div className="text-lg font-black">
+                  {displayNodeLabel(selectedNode)}
+                </div>
+                <div className="mt-2 text-sm" style={{ color: "var(--muted-strong)" }}>
+                  {selectedNode.meta || "No metadata available."}
+                </div>
 
-                {node.meta ? (
-                  <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                    {node.meta}
+                <div className="mt-4">
+                  <div
+                    className="mb-2 text-xs font-bold uppercase tracking-[0.18em]"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Risk Score
                   </div>
-                ) : null}
-
-                {typeof node.risk === "number" ? (
-                  <div className="mt-3">
-                    <div className="mb-1 text-xs text-zinc-500 dark:text-zinc-400">
-                      Risk: {node.risk}
+                  <div className="flex items-center gap-3">
+                    <div className={`text-2xl font-black ${riskTone(selectedNode.risk)}`}>
+                      {selectedNode.risk ?? 0}
                     </div>
-                    <div className="h-2 rounded-full bg-zinc-200 dark:bg-white/10">
+                    <div
+                      className="h-2 flex-1 rounded-full"
+                      style={{ background: "var(--surface-2)" }}
+                    >
                       <div
-                        className={`h-2 rounded-full ${riskBarClass(node.risk)}`}
-                        style={{ width: `${Math.min(100, node.risk)}%` }}
+                        className={`h-2 rounded-full ${riskBar(selectedNode.risk).className}`}
+                        style={{ width: riskBar(selectedNode.risk).width }}
                       />
                     </div>
                   </div>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-        <div className="mb-4">
-          <div className="text-sm font-black">Node Detail</div>
-          <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            Seçilen düğümün ilişkileri
-          </div>
-        </div>
-
-        {!selectedNode ? (
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-6 text-sm text-zinc-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-zinc-400">
-            Node seçilmedi.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
-              <div className="text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
-                Selected
-              </div>
-              <div className="mt-2 text-sm font-semibold">{selectedNode.label}</div>
-              <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                {selectedNode.type}
-                {selectedNode.meta ? ` · ${selectedNode.meta}` : ""}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
-              <div className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
-                Relationships
-              </div>
-
-              {relatedEdges.length === 0 ? (
-                <div className="text-sm text-zinc-500 dark:text-zinc-400">
-                  İlişki bulunamadı.
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  {relatedEdges.map((edge, idx) => (
-                    <div
-                      key={`${edge.from}-${edge.to}-${idx}`}
-                      className="rounded-xl border border-zinc-200 p-3 dark:border-white/10"
-                    >
-                      <div className="text-sm font-medium">
-                        {edge.from} → {edge.to}
-                      </div>
-                      <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        {edge.label || "linked"}
-                      </div>
-                    </div>
-                  ))}
+              </section>
+
+              <section
+                className="rounded-2xl border p-4"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-0)",
+                }}
+              >
+                <div
+                  className="mb-3 text-xs font-bold uppercase tracking-[0.18em]"
+                  style={{ color: "var(--muted)" }}
+                >
+                  Related Edges
                 </div>
-              )}
+
+                {relatedEdges.length === 0 ? (
+                  <div className="text-sm" style={{ color: "var(--muted)" }}>
+                    No direct relationships found for this entity.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {relatedEdges.map((edge, index) => (
+                      <div
+                        key={`${edge.from}-${edge.to}-${index}`}
+                        className="rounded-xl border px-3 py-3 text-sm"
+                        style={{
+                          borderColor: "var(--border)",
+                          background: "color-mix(in srgb, var(--surface-1) 88%, transparent)",
+                        }}
+                      >
+                        <div className="font-medium">
+                          {edge.from} → {edge.to}
+                        </div>
+                        <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                          {edge.label || "Unlabelled relationship"}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
             </div>
-          </div>
-        )}
-      </section>
-    </div>
+          ) : (
+            <div
+              className="rounded-2xl border p-6 text-sm"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-1)",
+                color: "var(--muted)",
+              }}
+            >
+              Node seçilmedi.
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
   );
 }

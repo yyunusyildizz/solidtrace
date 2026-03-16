@@ -1,128 +1,139 @@
-// isolation_manager.rs - v2.0 (REVISED)
-// Düzeltmeler:
-//   - Kural ekleme sırası kritik: önce ALLOW sonra BLOCK — eğer ağ kesintisi olursa
-//     ALLOW kuralı eklenmeden BLOCK düşerse SOC bağlantısı da kesilir
-//     → İzolasyon sonrası SOC'a ping atılıyor, başarısızsa geri al
-//   - "No rules match" kontrolü string içinde — stderr Türkçe sistemde farklı dil olabilir
-//     → Status code kontrolüne ek olarak daha sağlam hata ayırt etme
-//   - Kurallar eklendikten sonra doğrulama yapılmıyor — verify eklendi
-//   - run_netsh blocking I/O — async context'te tokio::task::spawn_blocking önerilir
-
 use std::process::Command;
 
-const RULE_ALLOW:     &str = "SolidTrace_Allow_SOC";
-const RULE_BLOCK_OUT: &str = "SolidTrace_Block_All_Out";
-const RULE_BLOCK_IN:  &str = "SolidTrace_Block_All_In";
-
-/// Host'u ağdan izole et — sadece server_ip ile iletişime izin ver
-pub fn enable_isolation(server_ip: &str) {
-    println!("⛔ [ISOLATION] AĞ İZOLASYONU BAŞLATILIYOR (Sunucu: {})...", server_ip);
-
-    // 1. Eski kuralları temizle
-    disable_isolation();
-
-    // 2. FIX: ÖNCE SOC'a izin ver — sonra genel blok uygula
-    // Sıralama kritik: ALLOW önce olmazsa SOC bağlantısı da bloklanır
-    let allow_ok = run_netsh(&[
-        "advfirewall", "firewall", "add", "rule",
-        &format!("name={}", RULE_ALLOW),
-        "dir=out",
-        "action=allow",
-        &format!("remoteip={}", server_ip),
-        "protocol=TCP",
-        "enable=yes",
-    ]);
-
-    if !allow_ok {
-        eprintln!("❌ [ISOLATION] SOC izin kuralı eklenemedi! İzolasyon iptal ediliyor.");
-        eprintln!("   👉 ÇÖZÜM: Terminali Yönetici olarak çalıştırın.");
-        return; // FIX: ALLOW başarısız olursa BLOCK ekleme — SOC bağlantısı kesilir
-    }
-
-    // 3. Giden trafiği engelle
-    let block_out_ok = run_netsh(&[
-        "advfirewall", "firewall", "add", "rule",
-        &format!("name={}", RULE_BLOCK_OUT),
-        "dir=out",
-        "action=block",
-        "enable=yes",
-    ]);
-
-    // 4. Gelen trafiği engelle
-    let block_in_ok = run_netsh(&[
-        "advfirewall", "firewall", "add", "rule",
-        &format!("name={}", RULE_BLOCK_IN),
-        "dir=in",
-        "action=block",
-        "enable=yes",
-    ]);
-
-    if block_out_ok && block_in_ok {
-        println!("✅ [ISOLATION] Karantina aktif. Sadece {} ile iletişim kurulabilir.", server_ip);
-    } else {
-        eprintln!("⚠️ [ISOLATION] Bazı kurallar eklenemedi — izolasyon eksik olabilir.");
-    }
-}
-
-/// İzolasyonu kaldır — normal ağ erişimine dön
-pub fn disable_isolation() {
-    println!("🌍 [ISOLATION] Ağ kilidi kaldırılıyor...");
-
-    let results = [
-        run_netsh_delete(RULE_ALLOW),
-        run_netsh_delete(RULE_BLOCK_OUT),
-        run_netsh_delete(RULE_BLOCK_IN),
+fn apply_firewall_rule(
+    rule_name: &str,
+    dir: &str,
+    action: &str,
+    remote_ip: Option<&str>,
+) -> Result<String, String> {
+    let mut args: Vec<String> = vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "add".to_string(),
+        "rule".to_string(),
+        format!("name={}", rule_name),
+        format!("dir={}", dir),
+        format!("action={}", action),
+        "enable=yes".to_string(),
     ];
 
-    if results.iter().all(|&r| r) {
-        println!("✅ [ISOLATION] Tüm kurallar temizlendi, internet erişimi normale döndü.");
-    } else {
-        // Kural bulunamadı hatası normal — ilk çalıştırmada kurallar yoktur
-        println!("ℹ️  [ISOLATION] Bazı kurallar zaten yoktu (normal durum).");
+    if let Some(ip) = remote_ip {
+        args.push(format!("remoteip={}", ip));
     }
-}
 
-/// Kural sil — bulunamazsa hata değil, normal
-fn run_netsh_delete(rule_name: &str) -> bool {
     let output = Command::new("netsh")
-        .args(&["advfirewall", "firewall", "delete", "rule", &format!("name={}", rule_name)])
-        .output();
+        .args(&args)
+        .output()
+        .map_err(|e| format!("firewall rule uygulanamadı: {}", e))?;
 
-    match output {
-        Ok(out) => out.status.success(),
-        Err(e) => {
-            eprintln!("⚠️ [ISOLATION] netsh çalıştırılamadı: {}", e);
-            false
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        Ok(if stdout.is_empty() {
+            format!("Firewall rule uygulandı: {}", rule_name)
+        } else {
+            stdout
+        })
+    } else {
+        Err(if stderr.is_empty() {
+            format!("Firewall rule başarısız: {}", rule_name)
+        } else {
+            stderr
+        })
+    }
+}
+
+fn delete_firewall_rule(rule_name: &str) -> Result<String, String> {
+    let args: Vec<String> = vec![
+        "advfirewall".to_string(),
+        "firewall".to_string(),
+        "delete".to_string(),
+        "rule".to_string(),
+        format!("name={}", rule_name),
+    ];
+
+    let output = Command::new("netsh")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("Firewall rule silinemedi: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        Ok(if stdout.is_empty() {
+            format!("Firewall rule silindi: {}", rule_name)
+        } else {
+            stdout
+        })
+    } else {
+        let combined = format!("{} {}", stdout, stderr).to_lowercase();
+        if combined.contains("no rules match")
+            || combined.contains("eşleşen kural yok")
+            || combined.contains("ok.")
+        {
+            Ok(format!("Rule zaten yok: {}", rule_name))
+        } else {
+            Err(if stderr.is_empty() {
+                format!("Firewall rule silme başarısız: {}", rule_name)
+            } else {
+                stderr
+            })
         }
     }
 }
 
-/// Kural ekle — başarı durumunu döndür
-fn run_netsh(args: &[&str]) -> bool {
-    let output = Command::new("netsh").args(args).output();
+/// Host'u ağdan büyük ölçüde izole eder.
+/// `server_ip` verilirse bu IP için erişim koruma kuralı ekler.
+pub fn enable_isolation(server_ip: &str) -> Result<String, String> {
+    let allow_out_name = "SolidTrace Allow Server Out";
+    let allow_in_name = "SolidTrace Allow Server In";
+    let block_out_name = "SolidTrace Block All Out";
+    let block_in_name = "SolidTrace Block All In";
 
-    match output {
-        Ok(out) => {
-            if out.status.success() {
-                return true;
-            }
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut messages = Vec::new();
 
-            // FIX: Hata mesajı dil bağımsız — status code ana kriter
-            eprintln!("❌ [FIREWALL] Kural eklenemedi:");
-            if !stderr.trim().is_empty() {
-                eprintln!("   stderr: {}", stderr.trim());
-            }
-            if !stdout.trim().is_empty() {
-                eprintln!("   stdout: {}", stdout.trim());
-            }
-            eprintln!("   👉 Terminali Yönetici olarak çalıştırın.");
-            false
-        }
-        Err(e) => {
-            eprintln!("⚠️ [FIREWALL] netsh çalıştırılamadı: {}", e);
-            false
-        }
+    if !server_ip.trim().is_empty() {
+        messages.push(apply_firewall_rule(
+            allow_out_name,
+            "out",
+            "allow",
+            Some(server_ip),
+        )?);
+        messages.push(apply_firewall_rule(
+            allow_in_name,
+            "in",
+            "allow",
+            Some(server_ip),
+        )?);
     }
+
+    messages.push(apply_firewall_rule(block_out_name, "out", "block", None)?);
+    messages.push(apply_firewall_rule(block_in_name, "in", "block", None)?);
+
+    Ok(format!(
+        "İzolasyon etkinleştirildi. {}",
+        messages.join(" | ")
+    ))
+}
+
+/// Host izolasyonunu kaldırır.
+pub fn disable_isolation() -> Result<String, String> {
+    let rules = [
+        "SolidTrace Allow Server Out",
+        "SolidTrace Allow Server In",
+        "SolidTrace Block All Out",
+        "SolidTrace Block All In",
+    ];
+
+    let mut messages = Vec::new();
+    for rule in rules {
+        messages.push(delete_firewall_rule(rule)?);
+    }
+
+    Ok(format!(
+        "İzolasyon kaldırıldı. {}",
+        messages.join(" | ")
+    ))
 }

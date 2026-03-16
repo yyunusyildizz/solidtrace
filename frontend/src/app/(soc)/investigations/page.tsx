@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Briefcase,
   CheckCircle2,
@@ -14,115 +15,14 @@ import { Panel } from "@/components/soc/ui/panel";
 import InvestigationGraph, {
   type InvestigationGraphData,
 } from "@/components/soc/investigation-graph";
-
-type InvestigationStatus = "open" | "in_progress" | "contained" | "closed";
-type InvestigationSeverity = "CRITICAL" | "HIGH" | "WARNING" | "INFO";
-
-interface InvestigationItem {
-  id: string;
-  title: string;
-  status: InvestigationStatus;
-  severity: InvestigationSeverity;
-  owner: string;
-  created_at: string;
-  updated_at: string;
-  related_alerts: number;
-  affected_host: string;
-  summary: string;
-  tags: string[];
-  graph: InvestigationGraphData;
-}
-
-const MOCK_INVESTIGATIONS: InvestigationItem[] = [
-  {
-    id: "INV-2026-001",
-    title: "Credential Dumping investigation on DESKTOP-QA-0529904F",
-    status: "open",
-    severity: "CRITICAL",
-    owner: "analyst",
-    created_at: "2026-03-10T19:27:47.920936+00:00",
-    updated_at: "2026-03-10T19:35:12.000000+00:00",
-    related_alerts: 6,
-    affected_host: "DESKTOP-QA-0529904F",
-    summary:
-      "Mimikatz benzeri davranış ve yüksek riskli process execution olayları inceleniyor.",
-    tags: ["credential-dumping", "windows", "high-risk"],
-    graph: {
-      nodes: [
-        { id: "host-1", label: "DESKTOP-QA-0529904F", type: "host", risk: 92, meta: "Windows endpoint" },
-        { id: "user-1", label: "yunus", type: "user", risk: 68, meta: "Interactive session" },
-        { id: "proc-1", label: "powershell.exe", type: "process", risk: 84, meta: "PID 4545" },
-        { id: "rule-1", label: "Credential Dumping", type: "rule", risk: 95, meta: "Sigma-like detection" },
-        { id: "alert-1", label: "ALERT-9767", type: "alert", risk: 95, meta: "Open / critical" },
-      ],
-      edges: [
-        { from: "user-1", to: "proc-1", label: "executed" },
-        { from: "proc-1", to: "host-1", label: "ran on" },
-        { from: "proc-1", to: "rule-1", label: "matched" },
-        { from: "rule-1", to: "alert-1", label: "generated" },
-        { from: "host-1", to: "alert-1", label: "affected" },
-      ],
-    },
-  },
-  {
-    id: "INV-2026-002",
-    title: "Repeated suspicious PowerShell executions",
-    status: "in_progress",
-    severity: "HIGH",
-    owner: "analyst",
-    created_at: "2026-03-10T16:00:00.000000+00:00",
-    updated_at: "2026-03-10T18:20:00.000000+00:00",
-    related_alerts: 4,
-    affected_host: "DESKTOP-QA-8AC3B995",
-    summary:
-      "Encoded PowerShell komutlarının tekrar ettiği olaylar korelasyon altında takip ediliyor.",
-    tags: ["powershell", "execution", "correlation"],
-    graph: {
-      nodes: [
-        { id: "host-2", label: "DESKTOP-QA-8AC3B995", type: "host", risk: 73, meta: "Windows endpoint" },
-        { id: "user-2", label: "analyst", type: "user", risk: 41, meta: "Logged-in user" },
-        { id: "proc-2", label: "powershell -enc ...", type: "process", risk: 79, meta: "Suspicious encoded command" },
-        { id: "rule-2", label: "Suspicious PowerShell", type: "rule", risk: 82, meta: "Execution policy bypass" },
-        { id: "alert-2", label: "ALERT-8831", type: "alert", risk: 82, meta: "Acknowledged / high" },
-      ],
-      edges: [
-        { from: "user-2", to: "proc-2", label: "launched" },
-        { from: "proc-2", to: "host-2", label: "executed on" },
-        { from: "proc-2", to: "rule-2", label: "triggered" },
-        { from: "rule-2", to: "alert-2", label: "created" },
-      ],
-    },
-  },
-  {
-    id: "INV-2026-003",
-    title: "Host isolation validation after suspicious lateral movement",
-    status: "contained",
-    severity: "HIGH",
-    owner: "yunus",
-    created_at: "2026-03-09T12:10:00.000000+00:00",
-    updated_at: "2026-03-09T14:45:00.000000+00:00",
-    related_alerts: 8,
-    affected_host: "SERVER-FIN-01",
-    summary:
-      "İzolasyon sonrası host davranışları ve yeni alert üretimi izleniyor.",
-    tags: ["containment", "lateral-movement", "server"],
-    graph: {
-      nodes: [
-        { id: "host-3", label: "SERVER-FIN-01", type: "host", risk: 76, meta: "Critical server" },
-        { id: "user-3", label: "svc-admin", type: "user", risk: 63, meta: "Privileged account" },
-        { id: "proc-3", label: "wmic.exe", type: "process", risk: 71, meta: "Remote exec signal" },
-        { id: "rule-3", label: "Lateral Movement", type: "rule", risk: 80, meta: "Remote execution pattern" },
-        { id: "alert-3", label: "ALERT-7712", type: "alert", risk: 80, meta: "Contained" },
-      ],
-      edges: [
-        { from: "user-3", to: "proc-3", label: "used" },
-        { from: "proc-3", to: "host-3", label: "targeted" },
-        { from: "proc-3", to: "rule-3", label: "matched" },
-        { from: "rule-3", to: "alert-3", label: "generated" },
-      ],
-    },
-  },
-];
+import {
+  getInvestigationGraph,
+  getInvestigations,
+  type InvestigationQueueItem,
+  type InvestigationSeverity,
+  type InvestigationStatus,
+} from "@/lib/api/investigations";
+import { clearAuthSession, getToken } from "@/lib/auth";
 
 function fmtDate(value?: string | null) {
   if (!value) return "—";
@@ -173,15 +73,182 @@ function statusBadge(status: InvestigationStatus) {
   return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-400";
 }
 
+function SummaryCard({
+  title,
+  value,
+  hint,
+  icon,
+}: {
+  title: string;
+  value: number;
+  hint: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div
+      className="rounded-3xl border p-4"
+      style={{
+        background: "var(--panel-strong)",
+        borderColor: "var(--border)",
+        boxShadow: "var(--shadow-soft)",
+      }}
+    >
+      <div className="mb-3 flex items-center justify-between">
+        <div
+          className="text-[11px] font-bold uppercase tracking-[0.22em]"
+          style={{ color: "var(--muted)" }}
+        >
+          {title}
+        </div>
+        <div style={{ color: "var(--muted)" }}>{icon}</div>
+      </div>
+      <div className="text-3xl font-black tracking-tight">{value}</div>
+      <div className="mt-2 text-xs" style={{ color: "var(--muted)" }}>
+        {hint}
+      </div>
+    </div>
+  );
+}
+
+function InfoCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div
+      className="rounded-2xl border p-4"
+      style={{
+        borderColor: "var(--border)",
+        background: "color-mix(in srgb, var(--surface-1) 88%, transparent)",
+      }}
+    >
+      <div
+        className="mb-2 text-xs font-bold uppercase tracking-[0.2em]"
+        style={{ color: "var(--muted)" }}
+      >
+        {label}
+      </div>
+      <div className="text-sm" style={{ color: "var(--foreground)" }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
 export default function InvestigationsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | InvestigationStatus>("ALL");
-  const [selected, setSelected] = useState<InvestigationItem | null>(MOCK_INVESTIGATIONS[0]);
+  const [queue, setQueue] = useState<InvestigationQueueItem[]>([]);
+  const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
+  const [graph, setGraph] = useState<InvestigationGraphData | null>(null);
+  const [loadingQueue, setLoadingQueue] = useState(true);
+  const [loadingGraph, setLoadingGraph] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const requestedAlertId = searchParams.get("alert_id");
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadQueue() {
+      try {
+        setLoadingQueue(true);
+        setError(null);
+
+        const token = getToken();
+        if (!token) {
+          router.replace(`/login?next=${encodeURIComponent("/investigations")}`);
+          return;
+        }
+
+        const data = await getInvestigations(token);
+
+        if (!active) return;
+
+        setQueue(data);
+
+        const firstAvailableId = data[0]?.alert_id ?? null;
+        const initialId =
+          requestedAlertId && data.some((item) => item.alert_id === requestedAlertId)
+            ? requestedAlertId
+            : firstAvailableId;
+
+        setSelectedAlertId(initialId);
+      } catch (err) {
+        if (!active) return;
+        if (err instanceof Error && err.message.includes("Not authenticated")) {
+          clearAuthSession();
+          router.replace(`/login?next=${encodeURIComponent("/investigations")}`);
+          return;
+        }
+        setError(err instanceof Error ? err.message : "Investigation queue yüklenemedi");
+      } finally {
+        if (active) setLoadingQueue(false);
+      }
+    }
+
+    loadQueue();
+
+    return () => {
+      active = false;
+    };
+  }, [requestedAlertId, router]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadGraph(alertId: string) {
+      try {
+        setLoadingGraph(true);
+
+        const token = getToken();
+        if (!token) {
+          router.replace(`/login?next=${encodeURIComponent("/investigations")}`);
+          return;
+        }
+
+        const data = await getInvestigationGraph(alertId, token);
+        if (!active) return;
+
+        setGraph({
+          nodes: data.nodes ?? [],
+          edges: data.edges ?? [],
+        });
+      } catch (err) {
+        if (!active) return;
+        if (err instanceof Error && err.message.includes("Not authenticated")) {
+          clearAuthSession();
+          router.replace(`/login?next=${encodeURIComponent("/investigations")}`);
+          return;
+        }
+        setGraph({ nodes: [], edges: [] });
+        setError(err instanceof Error ? err.message : "Investigation graph yüklenemedi");
+      } finally {
+        if (active) setLoadingGraph(false);
+      }
+    }
+
+    if (selectedAlertId) {
+      loadGraph(selectedAlertId);
+    } else {
+      setGraph(null);
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [selectedAlertId, router]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    return MOCK_INVESTIGATIONS.filter((item) => {
+    return queue.filter((item) => {
       const statusOk = statusFilter === "ALL" || item.status === statusFilter;
       const queryOk =
         !q ||
@@ -198,20 +265,54 @@ export default function InvestigationsPage() {
 
       return statusOk && queryOk;
     });
-  }, [search, statusFilter]);
+  }, [queue, search, statusFilter]);
+
+  const selected = useMemo(
+    () => queue.find((item) => item.alert_id === selectedAlertId) ?? null,
+    [queue, selectedAlertId],
+  );
 
   const summary = useMemo(() => {
     return {
-      total: MOCK_INVESTIGATIONS.length,
-      open: MOCK_INVESTIGATIONS.filter((x) => x.status === "open").length,
-      active: MOCK_INVESTIGATIONS.filter((x) => x.status === "in_progress").length,
-      contained: MOCK_INVESTIGATIONS.filter((x) => x.status === "contained").length,
-      closed: MOCK_INVESTIGATIONS.filter((x) => x.status === "closed").length,
+      total: queue.length,
+      open: queue.filter((x) => x.status === "open").length,
+      active: queue.filter((x) => x.status === "in_progress").length,
+      contained: queue.filter((x) => x.status === "contained").length,
+      closed: queue.filter((x) => x.status === "closed").length,
     };
-  }, []);
+  }, [queue]);
 
   return (
     <div className="grid gap-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <div
+            className="text-[11px] font-bold uppercase tracking-[0.24em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Investigation Workspace
+          </div>
+          <div className="mt-2 text-2xl font-black tracking-tight">
+            Alert-driven investigations with graph-based context
+          </div>
+          <div className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
+            Queue, detail and entity graph designed for analyst workflow continuity.
+          </div>
+        </div>
+
+        <div
+          className="inline-flex items-center gap-2 rounded-2xl border px-4 py-2.5 text-sm font-medium"
+          style={{
+            background: "var(--surface-1)",
+            borderColor: "var(--border-strong)",
+            color: "var(--muted-strong)",
+          }}
+        >
+          <Filter size={14} />
+          Filtered queue
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <SummaryCard title="Total Cases" value={summary.total} hint="Toplam investigation" icon={<Briefcase size={15} />} />
         <SummaryCard title="Open" value={summary.open} hint="Yeni vakalar" icon={<ShieldAlert size={15} />} />
@@ -220,17 +321,8 @@ export default function InvestigationsPage() {
         <SummaryCard title="Closed" value={summary.closed} hint="Tamamlanan" icon={<CheckCircle2 size={15} />} />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel
-          title="Investigation Queue"
-          subtitle="Case-driven SOC görünümü"
-          action={
-            <div className="inline-flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
-              <Filter size={13} />
-              Filtered list
-            </div>
-          }
-        >
+      <div className="grid gap-6 xl:grid-cols-[0.88fr_1.12fr]">
+        <Panel title="Investigation Queue" subtitle="Alert-driven SOC görünümü">
           <div className="mb-4 grid gap-3 md:grid-cols-[1fr_auto]">
             <div className="relative">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
@@ -238,14 +330,24 @@ export default function InvestigationsPage() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="case id, title, owner, host..."
-                className="w-full rounded-2xl border border-zinc-200 bg-white px-10 py-3 text-sm outline-none transition focus:border-zinc-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-white dark:focus:border-white/20"
+                className="w-full rounded-2xl border px-10 py-3 text-sm outline-none transition"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-0)",
+                  color: "var(--foreground)",
+                }}
               />
             </div>
 
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as "ALL" | InvestigationStatus)}
-              className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.03]"
+              className="rounded-2xl border px-4 py-3 text-sm outline-none"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+                color: "var(--foreground)",
+              }}
             >
               <option value="ALL">All Status</option>
               <option value="open">Open</option>
@@ -255,55 +357,96 @@ export default function InvestigationsPage() {
             </select>
           </div>
 
-          <div className="space-y-3">
-            {filtered.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setSelected(item)}
-                className={`w-full rounded-2xl border p-4 text-left transition ${
-                  selected?.id === item.id
-                    ? "border-zinc-900 bg-zinc-50 dark:border-white dark:bg-white/[0.05]"
-                    : "border-zinc-200 bg-white hover:bg-zinc-50 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.05]"
-                }`}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityBadge(item.severity)}`}>
-                    {item.severity}
-                  </span>
-                  <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusBadge(item.status)}`}>
-                    {item.status}
-                  </span>
-                </div>
+          {loadingQueue ? (
+            <div
+              className="rounded-2xl border p-6 text-sm"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-1)",
+                color: "var(--muted)",
+              }}
+            >
+              Investigation queue yükleniyor...
+            </div>
+          ) : filtered.length === 0 ? (
+            <div
+              className="rounded-2xl border p-6 text-sm"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-1)",
+                color: "var(--muted)",
+              }}
+            >
+              No active investigations derived from current alerts.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filtered.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => setSelectedAlertId(item.alert_id)}
+                  className="w-full rounded-2xl border p-4 text-left transition"
+                  style={
+                    selected?.id === item.id
+                      ? {
+                          borderColor: "var(--foreground)",
+                          background: "color-mix(in srgb, var(--surface-1) 92%, transparent)",
+                        }
+                      : {
+                          borderColor: "var(--border)",
+                          background: "var(--surface-0)",
+                        }
+                  }
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityBadge(item.severity)}`}>
+                      {item.severity}
+                    </span>
+                    <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusBadge(item.status)}`}>
+                      {item.status}
+                    </span>
+                  </div>
 
-                <div className="mt-3 text-sm font-semibold">{item.title}</div>
-                <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                  {item.id} · {item.affected_host} · {item.related_alerts} related alerts
-                </div>
-                <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                  Owner: {item.owner} · Updated: {relativeTime(item.updated_at)}
-                </div>
-              </button>
-            ))}
-          </div>
+                  <div className="mt-3 text-sm font-semibold">{item.title}</div>
+                  <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                    {item.id} · {item.affected_host} · {item.related_alerts} related alerts
+                  </div>
+                  <div className="mt-2 text-xs" style={{ color: "var(--muted-strong)" }}>
+                    Owner: {item.owner} · Updated: {relativeTime(item.updated_at)}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
         </Panel>
 
-        <Panel title="Investigation Detail" subtitle="Analyst çalışma paneli">
+        <Panel title="Investigation Detail" subtitle="Graph, context and analyst actions">
+          {error ? (
+            <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+              {error}
+            </div>
+          ) : null}
+
           {!selected ? (
-            <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-8 text-center text-sm text-zinc-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-zinc-400">
+            <div
+              className="rounded-2xl border p-8 text-center text-sm"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-1)",
+                color: "var(--muted)",
+              }}
+            >
               Investigation seçilmedi.
             </div>
           ) : (
             <div className="space-y-6">
-              <div className="grid gap-3 md:grid-cols-2">
-                <InfoCard label="Case ID" value={selected.id} />
-                <InfoCard label="Owner" value={selected.owner} />
-                <InfoCard label="Affected Host" value={selected.affected_host} />
-                <InfoCard label="Related Alerts" value={String(selected.related_alerts)} />
-                <InfoCard label="Created At" value={fmtDate(selected.created_at)} />
-                <InfoCard label="Updated At" value={fmtDate(selected.updated_at)} />
-              </div>
-
-              <section className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
+              <section
+                className="rounded-2xl border p-4"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "color-mix(in srgb, var(--surface-1) 86%, transparent)",
+                }}
+              >
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityBadge(selected.severity)}`}>
                     {selected.severity}
@@ -314,20 +457,40 @@ export default function InvestigationsPage() {
                 </div>
 
                 <div className="text-base font-black">{selected.title}</div>
-                <div className="mt-3 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                <div className="mt-3 text-sm leading-relaxed" style={{ color: "var(--muted-strong)" }}>
                   {selected.summary}
                 </div>
               </section>
 
-              <section className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
-                <div className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+              <div className="grid gap-3 md:grid-cols-2">
+                <InfoCard label="Case ID" value={selected.id} />
+                <InfoCard label="Owner" value={selected.owner} />
+                <InfoCard label="Affected Host" value={selected.affected_host} />
+                <InfoCard label="Related Alerts" value={String(selected.related_alerts)} />
+                <InfoCard label="Created At" value={fmtDate(selected.created_at)} />
+                <InfoCard label="Updated At" value={fmtDate(selected.updated_at)} />
+              </div>
+
+              <section
+                className="rounded-2xl border p-4"
+                style={{ borderColor: "var(--border)" }}
+              >
+                <div
+                  className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
+                  style={{ color: "var(--muted)" }}
+                >
                   Tags
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {selected.tags.map((tag) => (
                     <span
                       key={tag}
-                      className="inline-flex rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-xs text-zinc-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-300"
+                      className="inline-flex rounded-full border px-3 py-1 text-xs"
+                      style={{
+                        borderColor: "var(--border)",
+                        background: "var(--surface-1)",
+                        color: "var(--muted-strong)",
+                      }}
                     >
                       {tag}
                     </span>
@@ -335,24 +498,78 @@ export default function InvestigationsPage() {
                 </div>
               </section>
 
-              <InvestigationGraph data={selected.graph} />
+              {loadingGraph ? (
+                <div
+                  className="rounded-2xl border p-6 text-sm"
+                  style={{
+                    borderColor: "var(--border)",
+                    background: "var(--surface-1)",
+                    color: "var(--muted)",
+                  }}
+                >
+                  Investigation graph yükleniyor...
+                </div>
+              ) : graph ? (
+                <InvestigationGraph data={graph} />
+              ) : (
+                <div
+                  className="rounded-2xl border p-6 text-sm"
+                  style={{
+                    borderColor: "var(--border)",
+                    background: "var(--surface-1)",
+                    color: "var(--muted)",
+                  }}
+                >
+                  Graph verisi bulunamadı.
+                </div>
+              )}
 
-              <section className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
-                <div className="mb-3 text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+              <section
+                className="rounded-2xl border p-4"
+                style={{ borderColor: "var(--border)" }}
+              >
+                <div
+                  className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
+                  style={{ color: "var(--muted)" }}
+                >
                   Quick Actions
                 </div>
 
                 <div className="flex flex-wrap gap-3">
-                  <button className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200">
+                  <button
+                    className="rounded-xl px-4 py-2 text-sm font-medium transition"
+                    style={{
+                      background: "var(--foreground)",
+                      color: "var(--background)",
+                    }}
+                  >
                     Assign Owner
                   </button>
-                  <button className="rounded-xl border border-zinc-200 px-4 py-2 text-sm font-medium transition hover:bg-zinc-50 dark:border-white/10 dark:hover:bg-white/[0.05]">
+                  <button
+                    className="rounded-xl border px-4 py-2 text-sm font-medium transition"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--surface-0)",
+                    }}
+                  >
                     Add Note
                   </button>
-                  <button className="rounded-xl border border-zinc-200 px-4 py-2 text-sm font-medium transition hover:bg-zinc-50 dark:border-white/10 dark:hover:bg-white/[0.05]">
+                  <button
+                    className="rounded-xl border px-4 py-2 text-sm font-medium transition"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--surface-0)",
+                    }}
+                  >
                     Contain Host
                   </button>
-                  <button className="rounded-xl border border-zinc-200 px-4 py-2 text-sm font-medium transition hover:bg-zinc-50 dark:border-white/10 dark:hover:bg-white/[0.05]">
+                  <button
+                    className="rounded-xl border px-4 py-2 text-sm font-medium transition"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--surface-0)",
+                    }}
+                  >
                     Close Case
                   </button>
                 </div>
@@ -361,48 +578,6 @@ export default function InvestigationsPage() {
           )}
         </Panel>
       </div>
-    </div>
-  );
-}
-
-function SummaryCard({
-  title,
-  value,
-  hint,
-  icon,
-}: {
-  title: string;
-  value: number;
-  hint: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500 dark:text-zinc-400">
-          {title}
-        </div>
-        <div className="text-zinc-400 dark:text-zinc-500">{icon}</div>
-      </div>
-      <div className="text-3xl font-black tracking-tight">{value}</div>
-      <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{hint}</div>
-    </div>
-  );
-}
-
-function InfoCard({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 p-4 dark:border-white/10">
-      <div className="mb-2 text-xs font-bold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
-        {label}
-      </div>
-      <div className="text-sm text-zinc-800 dark:text-zinc-200">{value}</div>
     </div>
   );
 }

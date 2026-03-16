@@ -2,14 +2,6 @@
 app.core.security
 =================
 Kimlik doğrulama / yetkilendirme / güvenlik yardımcıları
-
-Bu revizyonda:
-- JWT access / refresh / pending_2fa token desteği
-- password hashing
-- RBAC / tenant helper'ları
-- agent secret encryption / decryption
-- HMAC signing helper'ları
-eklendi.
 """
 
 from __future__ import annotations
@@ -30,12 +22,10 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+from app.core.config import settings
+
 logger = logging.getLogger("SolidTrace.Security")
 
-
-# ---------------------------------------------------------------------------
-# JWT / AUTH CONFIG
-# ---------------------------------------------------------------------------
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
@@ -56,31 +46,18 @@ AUDIENCE = os.getenv("JWT_AUDIENCE", "solidtrace-panel")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
-
-# ---------------------------------------------------------------------------
-# AGENT AUTH CONFIG
-# ---------------------------------------------------------------------------
-
 AGENT_MAX_SKEW_SECONDS = int(os.getenv("AGENT_MAX_SKEW_SECONDS", "300"))
 
-# Bu değer urlsafe base64-encoded 32-byte olmalı (Fernet key formatı)
-# Üretmek için:
-# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 AGENT_SECRET_KEK = os.getenv("AGENT_SECRET_KEK")
 if not AGENT_SECRET_KEK:
     logger.warning("AGENT_SECRET_KEK tanımlı değil. Agent auth aktif edilmeden önce set edilmeli.")
 
-# Ticari dağıtım için güvenli default: false
-LEGACY_AGENT_AUTH = os.getenv("LEGACY_AGENT_AUTH", "false").lower() == "true"
+LEGACY_AGENT_AUTH = settings.LEGACY_AGENT_AUTH
 
 AGENT_NONCE_TTL_SECONDS = int(os.getenv("AGENT_NONCE_TTL_SECONDS", "300"))
 AGENT_RATE_LIMIT_PER_MINUTE = int(os.getenv("AGENT_RATE_LIMIT_PER_MINUTE", "120"))
 AGENT_IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("AGENT_IP_RATE_LIMIT_PER_MINUTE", "60"))
 
-
-# ---------------------------------------------------------------------------
-# PASSWORD HELPERS
-# ---------------------------------------------------------------------------
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
@@ -89,10 +66,6 @@ def verify_password(plain: str, hashed: str) -> bool:
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
-
-# ---------------------------------------------------------------------------
-# JWT HELPERS
-# ---------------------------------------------------------------------------
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -148,10 +121,6 @@ def decode_token(token: str) -> dict:
         issuer=ISSUER,
     )
 
-
-# ---------------------------------------------------------------------------
-# CURRENT USER / RBAC
-# ---------------------------------------------------------------------------
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
     exc = HTTPException(
@@ -227,10 +196,6 @@ def require_role(required_role: str):
     return _checker
 
 
-# ---------------------------------------------------------------------------
-# TENANT HELPERS
-# ---------------------------------------------------------------------------
-
 async def get_current_tenant_id(token: str = Depends(oauth2_scheme)) -> Optional[str]:
     try:
         payload = decode_token(token)
@@ -258,10 +223,6 @@ def tenant_filter(query, model, tenant_id: Optional[str]):
     return query
 
 
-# ---------------------------------------------------------------------------
-# GENERIC TOKEN / SECRET HELPERS
-# ---------------------------------------------------------------------------
-
 def hash_token(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -278,10 +239,6 @@ def verify_secret_hash(plain_value: str, stored_hash: str) -> bool:
 def secure_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a, b)
 
-
-# ---------------------------------------------------------------------------
-# AGENT SECRET ENCRYPTION
-# ---------------------------------------------------------------------------
 
 def _get_fernet() -> Fernet:
     if not AGENT_SECRET_KEK:
@@ -304,10 +261,6 @@ def decrypt_agent_secret(secret_enc: str) -> str:
     except InvalidToken as exc:
         raise RuntimeError("Agent secret decrypt edilemedi") from exc
 
-
-# ---------------------------------------------------------------------------
-# AGENT SIGNING / HMAC
-# ---------------------------------------------------------------------------
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -362,23 +315,21 @@ def ensure_agent_timestamp_fresh(ts: str) -> int:
     return client_ts
 
 
-# ---------------------------------------------------------------------------
-# LEGACY AGENT KEY SUPPORT
-# ---------------------------------------------------------------------------
-
 async def verify_tenant_agent_key(
     x_agent_key: Optional[str] = Header(None, alias="X-Agent-Key"),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
 ) -> Optional[str]:
-    """
-    Geçici legacy doğrulama.
-    Yeni model signed agent request olacak.
-    """
     if not LEGACY_AGENT_AUTH:
         raise HTTPException(status_code=401, detail="Legacy agent auth devre dışı")
 
     if not x_agent_key:
         raise HTTPException(status_code=401, detail="X-Agent-Key gerekli")
+
+    # Basit dev fallback: settings.AGENT_KEY ile eşleşirse kabul et
+    if settings.AGENT_KEY and secure_compare(settings.AGENT_KEY, x_agent_key):
+        tenant = x_tenant_id or settings.DEFAULT_TENANT_ID
+        logger.warning("Legacy agent auth kullanıldı (settings.AGENT_KEY) | tenant=%s", tenant)
+        return tenant
 
     from app.database.db_manager import SessionLocal, TenantModel
 
@@ -400,17 +351,7 @@ async def verify_tenant_agent_key(
         db.close()
 
 
-# ---------------------------------------------------------------------------
-# IN-MEMORY FALLBACK STORES
-# ---------------------------------------------------------------------------
-
 class NonceStore:
-    """
-    Redis yoksa geçici in-memory replay koruması.
-    Sadece tek process dev/test ortamı için uygundur.
-    Production'da Redis-backed nonce store zorunlu olmalıdır.
-    """
-
     def __init__(self, ttl_seconds: int = 300, max_items: int = 50000):
         self.ttl_seconds = ttl_seconds
         self.max_items = max_items
@@ -432,10 +373,6 @@ class NonceStore:
             self._store.popitem(last=False)
 
     def check_and_set(self, key: str) -> bool:
-        """
-        True => yeni nonce
-        False => replay
-        """
         self._cleanup()
         if key in self._store:
             return False
@@ -444,22 +381,12 @@ class NonceStore:
 
 
 class RateLimiterStore:
-    """
-    Hafif sliding-window rate limit store.
-    Sadece tek process dev/test fallback çözümüdür.
-    Production'da Redis-backed rate limiting kullanılmalıdır.
-    """
-
     def __init__(self, window_seconds: int = 60, max_items: int = 50000):
         self.window_seconds = window_seconds
         self.max_items = max_items
         self._store: dict[str, list[float]] = {}
 
     def hit(self, key: str, limit: int) -> bool:
-        """
-        True => izin ver
-        False => limit aşıldı
-        """
         now = time.time()
         window_start = now - self.window_seconds
 
@@ -486,10 +413,6 @@ _nonce_store = NonceStore(ttl_seconds=AGENT_NONCE_TTL_SECONDS)
 _rate_store = RateLimiterStore(window_seconds=60)
 
 
-# ---------------------------------------------------------------------------
-# AGENT REQUEST HELPERS
-# ---------------------------------------------------------------------------
-
 async def get_agent_auth_headers(
     x_agent_id: Optional[str] = Header(None, alias="X-Agent-Id"),
     x_agent_timestamp: Optional[str] = Header(None, alias="X-Agent-Timestamp"),
@@ -504,19 +427,44 @@ async def get_agent_auth_headers(
     }
 
 
-async def verify_agent_key(
+async def verify_tenant_agent_key(
     x_agent_key: Optional[str] = Header(None, alias="X-Agent-Key"),
     x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
 ) -> Optional[str]:
     """
-    Geriye dönük uyumluluk alias'ı.
-    Eski route'lar verify_agent_key import etmeye devam edebilir.
-    Yeni isim: verify_tenant_agent_key
+    Geçici legacy doğrulama.
+    Yeni model signed agent request olacak.
     """
-    return await verify_tenant_agent_key(
-        x_agent_key=x_agent_key,
-        x_tenant_id=x_tenant_id,
-    )
+    if not LEGACY_AGENT_AUTH:
+        raise HTTPException(status_code=401, detail="Legacy agent auth devre dışı")
+
+    if not x_agent_key:
+        raise HTTPException(status_code=401, detail="X-Agent-Key gerekli")
+
+    # Basit dev fallback: settings.AGENT_KEY ile eşleşirse kabul et
+    if settings.AGENT_KEY and secure_compare(settings.AGENT_KEY, x_agent_key):
+        tenant = x_tenant_id or settings.DEFAULT_TENANT_ID
+        logger.warning("Legacy agent auth kullanıldı (settings.AGENT_KEY) | tenant=%s", tenant)
+        return tenant
+
+    from app.database.db_manager import SessionLocal, TenantModel
+
+    db = SessionLocal()
+    try:
+        if x_tenant_id:
+            tenant = db.query(TenantModel).filter(TenantModel.id == x_tenant_id).first()
+            if tenant and tenant.is_active and tenant.agent_key and secure_compare(tenant.agent_key, x_agent_key):
+                logger.warning("Legacy agent auth kullanıldı (tenant-scoped)")
+                return tenant.id
+
+        tenant = db.query(TenantModel).filter(TenantModel.agent_key == x_agent_key).first()
+        if tenant and tenant.is_active:
+            logger.warning("Legacy agent auth kullanıldı")
+            return tenant.id
+
+        raise HTTPException(status_code=401, detail="Geçersiz agent key")
+    finally:
+        db.close()
 
 
 def enforce_agent_nonce(agent_id: str, nonce: str) -> None:
@@ -541,18 +489,23 @@ def get_client_ip(request: Request) -> str:
     return "unknown"
 
 
-# ---------------------------------------------------------------------------
-# SIGNED AGENT REQUEST VERIFY
-# ---------------------------------------------------------------------------
-
 async def verify_agent_request(
     request: Request,
     headers: dict = Depends(get_agent_auth_headers),
+    x_agent_key: Optional[str] = Header(None, alias="X-Agent-Key"),
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
 ) -> str:
     """
-    Signed agent request doğrulaması.
-    Başarılıysa tenant_id döndürür.
+    Öncelik:
+    1) Legacy X-Agent-Key fallback (dev/staging)
+    2) Signed agent request (production path)
     """
+
+    if x_agent_key:
+        return await verify_tenant_agent_key(
+            x_agent_key=x_agent_key,
+            x_tenant_id=x_tenant_id,
+        )
 
     agent_id = headers.get("agent_id")
     timestamp = headers.get("timestamp")

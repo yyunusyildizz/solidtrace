@@ -1,127 +1,126 @@
-#![allow(dead_code)]
-
 use std::process::Command;
 
-/// USB depolama birimlerini devre dışı bırak (Hybrid: Registry + PnP + Scan)
-pub fn disable_usb_storage() {
-    println!("⛔ [USB] USB depolama engelleniyor...");
-
-    // 1. Registry kilidi — yeni takılacak cihazlar sürücü yükleyemez
-    reg_write_dword(
-        r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR",
-        "Start", 4,
-    );
-    println!("✅ [USB-REG] Kapı kilitlendi (Start=4)");
-
-    // 2. Anlık bağlı USB depolama cihazlarını düşür
-    let ps_disable = r#"
-        $devices = Get-PnpDevice -InstanceId "*USBSTOR*" -ErrorAction SilentlyContinue
-        if ($devices) {
-            $devices | Disable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue
-            foreach ($d in $devices) {
-                Write-Host "DISABLED:$($d.FriendlyName)"
-            }
-        } else {
-            Write-Host "NONE"
-        }
-    "#;
-
-    let out = run_ps(ps_disable);
-    for line in out.lines() {
-        let l = line.trim();
-        if l.starts_with("DISABLED:") {
-            println!("✅ [USB-PNP] Devre dışı: {}", &l[9..]);
-        } else if l == "NONE" {
-            println!("ℹ️  [USB-PNP] Şu an takılı USB depolama yok.");
-        }
-    }
-
-    // 3. Donanım değişikliklerini tara
-    let _ = Command::new("pnputil").arg("/scan-devices").output();
-    println!("✅ [USB-SCAN] Donanım taraması tamamlandı.");
-    println!("🔒 [USB] USB depolama tamamen engellendi!");
-}
-
-/// USB depolama birimlerini tekrar etkinleştir
-pub fn enable_usb_storage() {
-    println!("🔓 [USB] USB depolama etkinleştiriliyor...");
-
-    // 1. Registry engelini kaldır
-    reg_write_dword(
-        r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR",
-        "Start", 3,
-    );
-    println!("✅ [USB-REG] Kilit açıldı (Start=3)");
-
-    // 2. Sadece pasif/disabled cihazları uyandır
-    let ps_enable = r#"
-        $devices = Get-PnpDevice -InstanceId "*USBSTOR*" -ErrorAction SilentlyContinue |
-                   Where-Object { $_.Status -ne "OK" }
-        if ($devices) {
-            $devices | Enable-PnpDevice -Confirm:$false -ErrorAction SilentlyContinue
-            foreach ($d in $devices) {
-                Write-Host "ENABLED:$($d.FriendlyName)"
-            }
-        } else {
-            Write-Host "NONE"
-        }
-    "#;
-
-    let out = run_ps(ps_enable);
-    for line in out.lines() {
-        let l = line.trim();
-        if l.starts_with("ENABLED:") {
-            println!("✅ [USB-PNP] Etkinleştirildi: {}", &l[8..]);
-        } else if l == "NONE" {
-            println!("ℹ️  [USB-PNP] Etkinleştirilecek pasif cihaz yok.");
-        }
-    }
-
-    // 3. Donanım değişikliklerini tara (zorla yenile)
-    let _ = Command::new("pnputil").arg("/scan-devices").output();
-    println!("✅ [USB-SCAN] Donanım taraması tamamlandı.");
-    println!("✅ [USB] USB depolama etkin! Gerekirse USB'yi çıkarıp tekrar takın.");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn reg_write_dword(key: &str, value: &str, data: u32) {
-    let data_str = data.to_string();
-    let result = Command::new("reg")
-        .args(["add", key, "/v", value, "/t", "REG_DWORD", "/d", &data_str, "/f"])
-        .output();
-    match result {
-        Ok(o) if o.status.success() => {}
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            if !err.trim().is_empty() {
-                println!("⚠️  [USB-REG] Hata: {}", err.trim());
-            }
-        }
-        Err(e) => println!("❌ [USB-REG] reg komutu çalışmadı: {}", e),
-    }
-}
-
-fn run_ps(script: &str) -> String {
-    match Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-OutputEncoding", "UTF8",
-            "-Command", script,
-        ])
+fn run_reg(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("reg")
+        .args(args)
         .output()
-    {
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            if !err.trim().is_empty() {
-                println!("⚠️  [USB-PS] {}", err.trim());
-            }
-            String::from_utf8_lossy(&o.stdout).to_string()
-        }
-        Err(e) => {
-            println!("❌ [USB-PS] PowerShell çalışmadı: {}", e);
-            String::new()
-        }
+        .map_err(|e| format!("reg komutu çalıştırılamadı: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        Ok(if stdout.is_empty() {
+            "ok".to_string()
+        } else {
+            stdout
+        })
+    } else {
+        Err(if stderr.is_empty() {
+            format!("reg başarısız oldu: {:?}", args)
+        } else {
+            stderr
+        })
     }
+}
+
+fn run_powershell(script: &str) -> Result<String, String> {
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .output()
+        .map_err(|e| format!("powershell çalıştırılamadı: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if output.status.success() {
+        Ok(if stdout.is_empty() {
+            "ok".to_string()
+        } else {
+            stdout
+        })
+    } else {
+        Err(if stderr.is_empty() {
+            "powershell komutu başarısız oldu".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+/// USB storage kullanımını registry üzerinden kapatır ve takılı depolama aygıtlarını disable etmeye çalışır.
+pub fn disable_usb_storage() -> Result<String, String> {
+    let mut messages = Vec::new();
+
+    messages.push(run_reg(&[
+        "add",
+        r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR",
+        "/v",
+        "Start",
+        "/t",
+        "REG_DWORD",
+        "/d",
+        "4",
+        "/f",
+    ])?);
+
+    // takılı removable storage cihazlarını disable etmeye çalış
+    let disable_script = r#"
+$devices = Get-PnpDevice | Where-Object {
+    $_.Class -eq 'DiskDrive' -or $_.FriendlyName -match 'USB'
+}
+foreach ($d in $devices) {
+    try {
+        Disable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction Stop | Out-Null
+        Write-Output ("disabled:" + $d.InstanceId)
+    } catch {
+        Write-Output ("skip:" + $d.InstanceId)
+    }
+}
+"#;
+
+    match run_powershell(disable_script) {
+        Ok(out) => messages.push(out),
+        Err(e) => messages.push(format!("PnP disable uyarısı: {}", e)),
+    }
+
+    Ok(format!("USB storage devre dışı bırakıldı. {}", messages.join(" | ")))
+}
+
+/// USB storage kullanımını tekrar açar ve uygun aygıtları enable etmeye çalışır.
+pub fn enable_usb_storage() -> Result<String, String> {
+    let mut messages = Vec::new();
+
+    messages.push(run_reg(&[
+        "add",
+        r"HKLM\SYSTEM\CurrentControlSet\Services\USBSTOR",
+        "/v",
+        "Start",
+        "/t",
+        "REG_DWORD",
+        "/d",
+        "3",
+        "/f",
+    ])?);
+
+    let enable_script = r#"
+$devices = Get-PnpDevice | Where-Object {
+    $_.Class -eq 'DiskDrive' -or $_.FriendlyName -match 'USB'
+}
+foreach ($d in $devices) {
+    try {
+        Enable-PnpDevice -InstanceId $d.InstanceId -Confirm:$false -ErrorAction Stop | Out-Null
+        Write-Output ("enabled:" + $d.InstanceId)
+    } catch {
+        Write-Output ("skip:" + $d.InstanceId)
+    }
+}
+"#;
+
+    match run_powershell(enable_script) {
+        Ok(out) => messages.push(out),
+        Err(e) => messages.push(format!("PnP enable uyarısı: {}", e)),
+    }
+
+    Ok(format!("USB storage aktif edildi. {}", messages.join(" | ")))
 }

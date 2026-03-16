@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Activity,
   AlertTriangle,
@@ -15,10 +16,12 @@ import {
 } from "lucide-react";
 import { Panel } from "@/components/soc/ui/panel";
 import { SeverityBadge } from "@/components/soc/ui/severity-badge";
+import { MetricCard } from "@/components/soc/ui/metric-card";
 import {
   getRecentActivity,
   type DashboardRecentActivityItem,
 } from "@/lib/api/dashboard";
+import { clearAuthSession, getToken } from "@/lib/auth";
 
 type ActivityFilter = "ALL" | "alert" | "audit";
 
@@ -106,6 +109,8 @@ function statusBadge(status?: string | null) {
 }
 
 export default function ActivityPage() {
+  const router = useRouter();
+
   const [items, setItems] = useState<DashboardRecentActivityItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -113,17 +118,25 @@ export default function ActivityPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ActivityFilter>("ALL");
 
-  const token =
-    typeof window !== "undefined" ? localStorage.getItem("soc_token") || undefined : undefined;
-
   const loadActivity = async () => {
     setLoading(true);
     setError("");
+
     try {
+      const token = getToken();
+      if (!token) {
+        router.replace("/login?next=/activity");
+        return;
+      }
+
       const rows = await getRecentActivity(token);
       setItems(rows);
     } catch (err) {
-      console.error(err);
+      if (err instanceof Error && err.message.includes("Not authenticated")) {
+        clearAuthSession();
+        router.replace("/login?next=/activity");
+        return;
+      }
       setError("Activity verileri alınamadı.");
     } finally {
       setLoading(false);
@@ -134,7 +147,6 @@ export default function ActivityPage() {
     loadActivity();
     const timer = setInterval(loadActivity, 30000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filteredItems = useMemo(() => {
@@ -174,31 +186,26 @@ export default function ActivityPage() {
 
   return (
     <div className="grid gap-6">
+      <div>
+        <div
+          className="text-[11px] font-bold uppercase tracking-[0.24em]"
+          style={{ color: "var(--muted)" }}
+        >
+          Activity Timeline
+        </div>
+        <div className="mt-2 text-2xl font-black tracking-tight">
+          Unified audit and alert event stream for analyst visibility
+        </div>
+        <div className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
+          Combined operational timeline across alerts, user actions and workflow updates.
+        </div>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard
-          title="Total Events"
-          value={summary.total}
-          hint="Birleşik activity akışı"
-          icon={<Activity size={15} />}
-        />
-        <SummaryCard
-          title="Alert Events"
-          value={summary.alerts}
-          hint="Detection kaynaklı"
-          icon={<Shield size={15} />}
-        />
-        <SummaryCard
-          title="Audit Events"
-          value={summary.audits}
-          hint="Kullanıcı / sistem işlemleri"
-          icon={<Workflow size={15} />}
-        />
-        <SummaryCard
-          title="Critical Alerts"
-          value={summary.criticalAlerts}
-          hint="Yüksek öncelik"
-          icon={<AlertTriangle size={15} />}
-        />
+        <MetricCard title="Total Events" value={summary.total} hint="Birleşik activity akışı" accent="neutral" icon={<Activity size={15} />} />
+        <MetricCard title="Alert Events" value={summary.alerts} hint="Detection kaynaklı" accent="danger" icon={<Shield size={15} />} />
+        <MetricCard title="Audit Events" value={summary.audits} hint="Kullanıcı / sistem işlemleri" accent="info" icon={<Workflow size={15} />} />
+        <MetricCard title="Critical Alerts" value={summary.criticalAlerts} hint="Yüksek öncelik" accent="warning" icon={<AlertTriangle size={15} />} />
       </div>
 
       <Panel
@@ -207,7 +214,12 @@ export default function ActivityPage() {
         action={
           <button
             onClick={loadActivity}
-            className="inline-flex items-center gap-2 rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-700 transition hover:bg-zinc-50 dark:border-white/10 dark:text-zinc-200 dark:hover:bg-white/[0.05]"
+            className="inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition"
+            style={{
+              borderColor: "var(--border-strong)",
+              background: "var(--surface-1)",
+              color: "var(--foreground)",
+            }}
           >
             <RefreshCw size={14} />
             Yenile
@@ -221,14 +233,24 @@ export default function ActivityPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="title, host, user, açıklama..."
-              className="w-full rounded-2xl border border-zinc-200 bg-white px-10 py-3 text-sm outline-none transition focus:border-zinc-400 dark:border-white/10 dark:bg-white/[0.03] dark:text-white dark:focus:border-white/20"
+              className="w-full rounded-2xl border px-10 py-3 text-sm outline-none transition"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+                color: "var(--foreground)",
+              }}
             />
           </div>
 
           <select
             value={filter}
             onChange={(e) => setFilter(e.target.value as ActivityFilter)}
-            className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/[0.03]"
+            className="rounded-2xl border px-4 py-3 text-sm outline-none"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-0)",
+              color: "var(--foreground)",
+            }}
           >
             <option value="ALL">All Events</option>
             <option value="alert">Alert</option>
@@ -243,14 +265,26 @@ export default function ActivityPage() {
         ) : null}
 
         {loading ? (
-          <div className="text-sm text-zinc-500 dark:text-zinc-400">Activity verileri yükleniyor...</div>
+          <div className="text-sm" style={{ color: "var(--muted)" }}>
+            Activity verileri yükleniyor...
+          </div>
         ) : filteredItems.length === 0 ? (
-          <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-8 text-center text-sm text-zinc-500 dark:border-white/10 dark:bg-white/[0.03] dark:text-zinc-400">
+          <div
+            className="rounded-2xl border p-8 text-center text-sm"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-1)",
+              color: "var(--muted)",
+            }}
+          >
             Gösterilecek activity verisi yok.
           </div>
         ) : (
           <div className="relative">
-            <div className="absolute bottom-0 left-[23px] top-0 w-px bg-zinc-200 dark:bg-white/10" />
+            <div
+              className="absolute bottom-0 left-[23px] top-0 w-px"
+              style={{ background: "var(--border)" }}
+            />
 
             <div className="space-y-4">
               {filteredItems.map((item, idx) => (
@@ -261,14 +295,28 @@ export default function ActivityPage() {
                     {getActivityIcon(item)}
                   </div>
 
-                  <div className="min-w-0 flex-1 rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
+                  <div
+                    className="min-w-0 flex-1 rounded-2xl border p-4"
+                    style={{
+                      borderColor: "var(--border)",
+                      background: "var(--surface-0)",
+                      boxShadow: "var(--shadow-soft)",
+                    }}
+                  >
                     <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           {item.activity_type === "alert" ? (
                             <SeverityBadge severity={item.severity || "INFO"} />
                           ) : (
-                            <span className="inline-flex rounded-full border border-zinc-200 bg-zinc-50 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-700 dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-300">
+                            <span
+                              className="inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
+                              style={{
+                                borderColor: "var(--border)",
+                                background: "var(--surface-1)",
+                                color: "var(--muted-strong)",
+                              }}
+                            >
                               audit
                             </span>
                           )}
@@ -282,20 +330,20 @@ export default function ActivityPage() {
 
                         <div className="mt-2 text-sm font-semibold">{item.title}</div>
 
-                        <div className="mt-1 flex flex-wrap gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        <div className="mt-1 flex flex-wrap gap-3 text-xs" style={{ color: "var(--muted)" }}>
                           {item.hostname ? <span>{item.hostname}</span> : null}
                           {item.username ? <span>{item.username}</span> : null}
                           <span>{fmtDate(item.timestamp)}</span>
                         </div>
 
                         {item.description ? (
-                          <div className="mt-3 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                          <div className="mt-3 text-sm leading-relaxed" style={{ color: "var(--muted-strong)" }}>
                             {item.description}
                           </div>
                         ) : null}
                       </div>
 
-                      <div className="shrink-0 text-right text-xs text-zinc-500 dark:text-zinc-400">
+                      <div className="shrink-0 text-right text-xs" style={{ color: "var(--muted)" }}>
                         <div className="inline-flex items-center gap-1">
                           <Clock3 size={12} />
                           {relativeTime(item.timestamp)}
@@ -309,31 +357,6 @@ export default function ActivityPage() {
           </div>
         )}
       </Panel>
-    </div>
-  );
-}
-
-function SummaryCard({
-  title,
-  value,
-  hint,
-  icon,
-}: {
-  title: string;
-  value: number;
-  hint: string;
-  icon: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500 dark:text-zinc-400">
-          {title}
-        </div>
-        <div className="text-zinc-400 dark:text-zinc-500">{icon}</div>
-      </div>
-      <div className="text-3xl font-black tracking-tight">{value}</div>
-      <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{hint}</div>
     </div>
   );
 }

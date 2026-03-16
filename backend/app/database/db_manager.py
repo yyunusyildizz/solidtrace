@@ -6,6 +6,7 @@ Veritabanı katmanı — tek sorumluluk:
   - ORM modelleri
   - backfill_security_columns() — SQLite migration
   - write_audit() yardımcı fonksiyonu
+  - command execution lifecycle kayıtları
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import (
     Boolean,
@@ -260,6 +261,33 @@ class AgentNonceModel(Base):
     )
 
 
+class CommandExecutionModel(Base):
+    __tablename__ = "command_executions"
+
+    id = Column(String, primary_key=True, index=True)
+    command_id = Column(String, unique=True, index=True, nullable=False)
+
+    action = Column(String, index=True, nullable=False)
+    target_hostname = Column(String, index=True, nullable=False)
+    requested_by = Column(String, nullable=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
+
+    status = Column(String, index=True, default="queued")
+    success = Column(Boolean, nullable=True)
+    message = Column(Text, nullable=True)
+
+    created_at = Column(String, index=True, nullable=False)
+    updated_at = Column(String, index=True, nullable=False)
+    acknowledged_at = Column(String, nullable=True)
+    finished_at = Column(String, nullable=True)
+
+    agent_hostname = Column(String, nullable=True, index=True)
+    result_payload = Column(Text, nullable=True)
+
+    def to_dict(self) -> dict:
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
+
 def backfill_security_columns() -> None:
     if not DATABASE_URL.startswith("sqlite"):
         logger.info("PostgreSQL algılandı; güvenlik kolonları için Alembic migration kullanın.")
@@ -338,6 +366,63 @@ def backfill_security_columns() -> None:
                     conn.exec_driver_sql(f"ALTER TABLE alerts_production_v2 ADD COLUMN {name} {ddl}")
                     logger.info("alerts_production_v2.%s kolonu eklendi", name)
 
+        if "command_executions" in tables:
+            cmd_existing = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(command_executions)").fetchall()
+            }
+            cmd_required = {
+                "command_id": "TEXT",
+                "action": "TEXT",
+                "target_hostname": "TEXT",
+                "requested_by": "TEXT",
+                "tenant_id": "TEXT",
+                "status": "TEXT DEFAULT 'queued'",
+                "success": "BOOLEAN",
+                "message": "TEXT",
+                "created_at": "TEXT",
+                "updated_at": "TEXT",
+                "acknowledged_at": "TEXT",
+                "finished_at": "TEXT",
+                "agent_hostname": "TEXT",
+                "result_payload": "TEXT",
+            }
+            for name, ddl in cmd_required.items():
+                if name not in cmd_existing:
+                    conn.exec_driver_sql(f"ALTER TABLE command_executions ADD COLUMN {name} {ddl}")
+                    logger.info("command_executions.%s kolonu eklendi", name)
+        else:
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE command_executions (
+                    id TEXT PRIMARY KEY,
+                    command_id TEXT UNIQUE,
+                    action TEXT,
+                    target_hostname TEXT,
+                    requested_by TEXT,
+                    tenant_id TEXT,
+                    status TEXT DEFAULT 'queued',
+                    success BOOLEAN,
+                    message TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    acknowledged_at TEXT,
+                    finished_at TEXT,
+                    agent_hostname TEXT,
+                    result_payload TEXT
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_command_executions_command_id ON command_executions(command_id)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_command_executions_status ON command_executions(status)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_command_executions_target_hostname ON command_executions(target_hostname)"
+            )
+            logger.info("command_executions tablosu oluşturuldu")
+
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
@@ -348,6 +433,128 @@ def init_db() -> None:
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
+def create_command_execution(
+    db: Session,
+    *,
+    command_id: str,
+    action: str,
+    target_hostname: str,
+    requested_by: str | None = None,
+    tenant_id: str | None = None,
+    status: str = "queued",
+    message: str | None = None,
+    result_payload: str | None = None,
+) -> CommandExecutionModel:
+    now = utcnow_iso()
+    existing = db.query(CommandExecutionModel).filter(
+        CommandExecutionModel.command_id == command_id
+    ).first()
+
+    if existing:
+        return existing
+
+    row = CommandExecutionModel(
+        id=str(uuid.uuid4()),
+        command_id=command_id,
+        action=action,
+        target_hostname=target_hostname,
+        requested_by=requested_by,
+        tenant_id=tenant_id,
+        status=status,
+        success=None,
+        message=message,
+        created_at=now,
+        updated_at=now,
+        acknowledged_at=None,
+        finished_at=None,
+        agent_hostname=None,
+        result_payload=result_payload,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def get_command_execution(db: Session, command_id: str) -> CommandExecutionModel | None:
+    return db.query(CommandExecutionModel).filter(
+        CommandExecutionModel.command_id == command_id
+    ).first()
+
+
+def update_command_execution(
+    db: Session,
+    command_id: str,
+    *,
+    status: str | None = None,
+    success: bool | None = None,
+    message: str | None = None,
+    agent_hostname: str | None = None,
+    result_payload: str | None = None,
+    acknowledged: bool = False,
+    finished: bool = False,
+) -> CommandExecutionModel | None:
+    row = get_command_execution(db, command_id)
+    if not row:
+        return None
+
+    # idempotency: final state'e ulaşmış komutu tekrar bozma
+    if row.status in {"completed", "failed", "expired"}:
+        return row
+
+    now = utcnow_iso()
+
+    if status is not None:
+        row.status = status
+    if success is not None:
+        row.success = success
+    if message is not None:
+        row.message = message
+    if agent_hostname is not None:
+        row.agent_hostname = agent_hostname
+    if result_payload is not None:
+        row.result_payload = result_payload
+
+    row.updated_at = now
+
+    if acknowledged and not row.acknowledged_at:
+        row.acknowledged_at = now
+    if finished and not row.finished_at:
+        row.finished_at = now
+
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+def expire_stale_commands(db: Session, older_than_seconds: int = 120) -> int:
+    now = datetime.now(timezone.utc)
+    rows = db.query(CommandExecutionModel).filter(
+        CommandExecutionModel.status.in_(["queued", "received"])
+    ).all()
+
+    updated = 0
+    for row in rows:
+        try:
+            created = datetime.fromisoformat(row.created_at.replace("Z", "+00:00"))
+        except Exception:
+            continue
+
+        age = (now - created).total_seconds()
+        if age >= older_than_seconds:
+            row.status = "expired"
+            row.success = False
+            row.message = "Command timed out"
+            row.updated_at = utcnow_iso()
+            row.finished_at = utcnow_iso()
+            db.add(row)
+            updated += 1
+
+    if updated:
+        db.commit()
+
+    return updated
 
 async def write_audit(
     db: Session,

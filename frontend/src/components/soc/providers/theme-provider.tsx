@@ -1,40 +1,65 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
-type ThemeMode = "dark" | "light";
+type Theme = "light" | "dark";
 
-interface ThemeContextValue {
-  theme: ThemeMode;
-  setTheme: (theme: ThemeMode) => void;
+type ThemeContextValue = {
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
-  mounted: boolean;
+};
+
+const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
+
+const STORAGE_KEY = "solidtrace-theme";
+
+function applyTheme(theme: Theme) {
+  if (typeof document === "undefined") return;
+  document.documentElement.setAttribute("data-theme", theme);
 }
 
-const ThemeContext = createContext<ThemeContextValue | null>(null);
-const STORAGE_KEY = "solidtrace_v2_theme";
+function getInitialTheme(): Theme {
+  if (typeof window === "undefined") return "dark";
 
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeMode>("dark");
-  const [mounted, setMounted] = useState(false);
+  const saved = window.localStorage.getItem(STORAGE_KEY);
+  if (saved === "light" || saved === "dark") {
+    return saved;
+  }
 
-  const applyTheme = (nextTheme: ThemeMode) => {
-    document.documentElement.classList.toggle("dark", nextTheme === "dark");
-    document.documentElement.setAttribute("data-theme", nextTheme);
-    document.body.classList.toggle("dark", nextTheme === "dark");
-  };
+  const prefersDark =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+
+  return prefersDark ? "dark" : "light";
+}
+
+export function ThemeProvider({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const [theme, setThemeState] = useState<Theme>("dark");
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as ThemeMode | null;
-    const nextTheme: ThemeMode = stored || "dark";
-    setThemeState(nextTheme);
-    applyTheme(nextTheme);
-    setMounted(true);
+    const initial = getInitialTheme();
+    setThemeState(initial);
+    applyTheme(initial);
   }, []);
 
-  const setTheme = (nextTheme: ThemeMode) => {
+  const setTheme = (nextTheme: Theme) => {
     setThemeState(nextTheme);
-    localStorage.setItem(STORAGE_KEY, nextTheme);
+
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, nextTheme);
+    }
+
     applyTheme(nextTheme);
   };
 
@@ -43,17 +68,23 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   };
 
   const value = useMemo(
-    () => ({ theme, setTheme, toggleTheme, mounted }),
-    [theme, mounted],
+    () => ({
+      theme,
+      setTheme,
+      toggleTheme,
+    }),
+    [theme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 
-export function useThemeMode() {
-  const ctx = useContext(ThemeContext);
-  if (!ctx) {
-    throw new Error("useThemeMode must be used inside ThemeProvider");
+export function useTheme() {
+  const context = useContext(ThemeContext);
+
+  if (!context) {
+    throw new Error("useTheme must be used within ThemeProvider");
   }
-  return ctx;
+
+  return context;
 }

@@ -545,6 +545,57 @@ class AlertActionResponse(BaseModel):
     assigned_to: Optional[str] = None
     assigned_at: Optional[str] = None
 
+
+
+class InvestigationQueueItem(BaseModel):
+    id: str
+    alert_id: str
+    title: str
+    severity: Optional[str] = None
+    status: Optional[str] = "open"
+    owner: str = "Unassigned"
+    created_at: str
+    updated_at: str
+    related_alerts: int = 0
+    affected_host: Optional[str] = None
+    username: Optional[str] = None
+    rule: Optional[str] = None
+    risk_score: Optional[int] = 0
+    summary: Optional[str] = None
+    tags: list[str] = []
+
+
+class InvestigationGraphNode(BaseModel):
+    id: str
+    label: str
+    type: Literal["alert", "host", "user", "process", "rule"]
+    risk: Optional[int] = None
+    meta: Optional[str] = None
+
+
+class InvestigationGraphEdge(BaseModel):
+    from_: str = Field(alias="from")
+    to: str
+    label: Optional[str] = None
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+
+class InvestigationGraphMeta(BaseModel):
+    summary: Optional[str] = None
+    related_alerts: int = 0
+
+
+class InvestigationGraphResponse(BaseModel):
+    alert_id: str
+    title: str
+    nodes: list[InvestigationGraphNode]
+    edges: list[InvestigationGraphEdge]
+    meta: Optional[InvestigationGraphMeta] = None
+
+
 # ---------------------------------------------------------------------------
 # ASSET INVENTORY
 # ---------------------------------------------------------------------------

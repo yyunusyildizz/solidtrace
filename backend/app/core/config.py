@@ -19,6 +19,12 @@ class Settings:
     JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "")
     AGENT_SECRET_KEK: str = os.getenv("AGENT_SECRET_KEK", "")
 
+    # Legacy / dev agent auth fallback
+    AGENT_KEY: str = os.getenv("AGENT_KEY", "")
+    LEGACY_AGENT_AUTH: bool = os.getenv("LEGACY_AGENT_AUTH", "true").lower() == "true"
+
+    DEFAULT_TENANT_ID: str = os.getenv("DEFAULT_TENANT_ID", "default_tenant")
+
     ALLOWED_ORIGINS: list[str] = [
         origin.strip()
         for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
