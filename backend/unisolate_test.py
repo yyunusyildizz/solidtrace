@@ -1,9 +1,10 @@
 import requests
 import sys
+import os
 
 BASE_URL = "http://127.0.0.1:8000"
 USERNAME = "admin"
-PASSWORD = "GucluSifre123!"
+PASSWORD = os.getenv("SOLIDTRACE_ADMIN_PASSWORD", "CHANGE_ME")
 HOSTNAME = "DESKTOP-UI41CTM"
 
 

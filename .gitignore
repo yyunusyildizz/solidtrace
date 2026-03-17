@@ -1,12 +1,10 @@
 # ========================
-# 🔒 GÜVENLİK (EN KRİTİK)
+# 🔒 GÜVENLİK VE SIRLAR (EN KRİTİK)
 # ========================
-# Hangi klasörde olursa olsun .env dosyalarını yoksay
-**/.env
-**/.env.local
-**/.env.development.local
-**/.env.test.local
-**/.env.production.local
+# Çevresel değişkenler
+.env
+.env.*
+!.env.example
 
 # Sertifikalar ve Anahtarlar (ASLA GİTMEMELİ)
 *.pem
@@ -14,17 +12,39 @@
 *.cert
 *.pfx
 *.p12
+secrets/
+
+# ========================
+# 🗄️ VERİTABANI (Local DB)
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+backend/data/
+# Not: backend/solidtrace.db zaten *.db kuralına takılacağı için ayrıca yazmaya gerek yok.
+
+# ========================
+# ⚙️ GENEL / İŞLETİM SİSTEMİ / IDE
+# ========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.exe
+*.dll
+*.so
+*.dylib
+*.log
 
 # ========================
 # 🦀 RUST (Agent)
 # ========================
-# Derleme çıktıları (Çok yer kaplar)
-agent_rust/target/
-
-# Hata ayıklama sembolleri
+# Derleme çıktıları (Global olarak nerede olursa olsun target yoksayılır)
+**/target/
 **/*.pdb
-
-# YEDEK DOSYALAR
 **/*.rs.bk
 
 # NOT: Cargo.lock dosyasını bilerek buraya eklemiyoruz.
@@ -33,88 +53,34 @@ agent_rust/target/
 # ========================
 # 🐍 PYTHON (Backend)
 # ========================
-# Bytecode ve Önbellek
-backend/__pycache__/
-backend/*.py[cod]
-backend/*$py.class
+__pycache__/
+*.py[cod]
+*$py.class
+**/venv/
+**/.venv/
+**/env/
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
 
-# Sanal Ortamlar (İsim ne olursa olsun)
-backend/venv/
-backend/.venv/
-backend/env/
-
-# Test ve Coverage Raporları
-backend/.pytest_cache/
-backend/.coverage
-backend/htmlcov/
-
-# Paketleme artıkları
-backend/*.egg-info/
+# Sadece requirements.txt dosyasına izin ver, diğer tüm txt dosyalarını yoksay
+backend/*.txt
+!backend/requirements.txt
 
 # ========================
 # ⚛️ NODE.JS / NEXT.JS (Frontend)
 # ========================
-frontend/node_modules/
+**/node_modules/
 frontend/.next/
 frontend/out/
 frontend/build/
 frontend/dist/
-
-# Vercel Dağıtım Dosyaları
 frontend/.vercel/
-
-# TypeScript Build Bilgisi
 frontend/*.tsbuildinfo
 
 # Debug Logları
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
-
-# ========================
-# ⚙️ GENEL / IDE DOSYALARI
-# ========================
-# İşletim Sistemi Çöpleri
-.DS_Store
-Thumbs.db
-ehthumbs.db
-
-# IDE Ayarları (Kişisel ayarlar gitmemeli)
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Derlenmiş Binary Dosyalar (Kaynak kodda olmamalı)
-*.exe
-*.dll
-*.so
-*.dylib
-
-# Loglar
-*.log
-
-# ========================
-# 🗄️ VERİTABANI (Local DB)
-# ========================
-*.db
-*.sqlite3
-backend/solidtrace.db
-backend/data/
-
-# --- KRİTİK ENGELLEMELER ---
-node_modules/
-**/node_modules/
-frontend/node_modules/
-backend/venv/
-backend/.venv/
-*.db
-*.sqlite3
-target/
-.env
-
-# Güvenlik eklemeleri
-backend/*.txt
-!backend/requirements.txt
-*.env.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
