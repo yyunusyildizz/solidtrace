@@ -1,7 +1,9 @@
 "use client";
 
+import AuthGuard from "@/components/auth/AuthGuard";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { HostLastResponseActions } from "@/components/soc/host-last-response-actions";
 import {
   Activity,
   AlertTriangle,
@@ -156,7 +158,7 @@ function InfoCard({
   );
 }
 
-export default function AlertsPage() {
+function AlertsPage() {
   const router = useRouter();
 
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
@@ -416,14 +418,14 @@ export default function AlertsPage() {
             </div>
           ) : (
             <div className="space-y-3">
+              {/* REVİZE EDİLEN BÖLÜM: İnline Quick Response ve Tıklanabilir Summary Alanı */}
               {filteredAlerts.map((alert) => {
                 const isSelected = selectedAlert?.id === alert.id;
 
                 return (
-                  <button
+                  <div
                     key={alert.id}
-                    onClick={() => loadAlertDetail(alert.id)}
-                    className="w-full rounded-2xl border p-4 text-left transition"
+                    className="rounded-2xl border p-4 transition"
                     style={
                       isSelected
                         ? {
@@ -436,29 +438,60 @@ export default function AlertsPage() {
                           }
                     }
                   >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(alert.severity)}`}>
-                        {alert.severity || "INFO"}
-                      </span>
-                      <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone(alert.status)}`}>
-                        {alert.status || "open"}
-                      </span>
-                    </div>
+                    <button
+                      onClick={() => loadAlertDetail(alert.id)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(alert.severity)}`}>
+                          {alert.severity || "INFO"}
+                        </span>
+                        <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone(alert.status)}`}>
+                          {alert.status || "open"}
+                        </span>
+                      </div>
 
-                    <div className="mt-3 text-sm font-semibold">{displayTitle(alert)}</div>
+                      <div className="mt-3 text-sm font-semibold">{displayTitle(alert)}</div>
 
-                    <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
-                      {alert.id} · {alert.hostname || "unknown-host"} · {alert.username || "unknown-user"}
-                    </div>
+                      <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
+                        {alert.id} · {alert.hostname || "unknown-host"} · {alert.username || "unknown-user"}
+                      </div>
 
-                    <div className="mt-2 flex flex-wrap gap-3 text-xs" style={{ color: "var(--muted-strong)" }}>
-                      <span>Risk: {alert.risk_score ?? 0}</span>
-                      <span>Created: {relativeTime(alert.created_at)}</span>
-                      <span>Owner: {alert.assigned_to || "Unassigned"}</span>
-                    </div>
-                  </button>
+                      <div className="mt-2 flex flex-wrap gap-3 text-xs" style={{ color: "var(--muted-strong)" }}>
+                        <span>Risk: {alert.risk_score ?? 0}</span>
+                        <span>Created: {relativeTime(alert.created_at)}</span>
+                        <span>Owner: {alert.assigned_to || "Unassigned"}</span>
+                      </div>
+                    </button>
+
+                    {alert.hostname ? (
+                      <div
+                        className="mt-3 border-t pt-3"
+                        style={{ borderColor: "var(--border)" }}
+                      >
+                        <div
+                          className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em]"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          Quick Response
+                        </div>
+
+                        <HostResponseActions
+                          hostname={alert.hostname}
+                          compact
+                          onActionComplete={async () => {
+                            await loadAlerts();
+                            if (selectedAlert?.id === alert.id) {
+                              await refreshSelected();
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
                 );
               })}
+              {/* ---------------------------------------------------------------------- */}
             </div>
           )}
         </Panel>
@@ -543,6 +576,21 @@ export default function AlertsPage() {
                     compact
                     onActionComplete={refreshSelected}
                   />
+                </section>
+              ) : null}
+
+              {selectedAlert.hostname ? (
+                <section
+                  className="rounded-2xl border p-4"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  <div
+                    className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Last Response Actions
+                  </div>
+                  <HostLastResponseActions hostname={selectedAlert.hostname} />
                 </section>
               ) : null}
 
@@ -739,5 +787,13 @@ export default function AlertsPage() {
         </Panel>
       </div>
     </div>
+  );
+}
+
+export default function AlertsPagePage() {
+  return (
+    <AuthGuard>
+      <AlertsPage />
+    </AuthGuard>
   );
 }

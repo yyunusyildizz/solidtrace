@@ -282,7 +282,7 @@ export default function ActivityPage() {
         ) : (
           <div className="relative">
             <div
-              className="absolute bottom-0 left-[23px] top-0 w-px"
+              className="absolute bottom-0 left-5.75op-0 w-px"
               style={{ background: "var(--border)" }}
             />
 

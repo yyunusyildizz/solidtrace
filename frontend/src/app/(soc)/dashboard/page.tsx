@@ -1,5 +1,6 @@
 "use client";
 
+import AuthGuard from "@/components/auth/AuthGuard";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ThreatMap from "@/components/soc/threat-map";
@@ -130,7 +131,7 @@ function HeroMetric({
   );
 }
 
-export default function DashboardPage() {
+function DashboardPageContent() {
   const router = useRouter();
 
   const [summary, setSummary] = useState<DashboardSummaryResponse | null>(null);
@@ -224,7 +225,7 @@ export default function DashboardPage() {
           {Array.from({ length: 3 }).map((_, i) => (
             <div
               key={i}
-              className="h-[22rem] animate-pulse rounded-3xl border"
+              className="h-88 animate-pulse rounded-3xl border"
               style={{
                 background: "var(--surface-1)",
                 borderColor: "var(--border)",
@@ -235,7 +236,7 @@ export default function DashboardPage() {
 
         <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
           <div
-            className="h-[28rem] animate-pulse rounded-3xl border"
+            className="h-112 animate-pulse rounded-3xl border"
             style={{
               background: "var(--surface-1)",
               borderColor: "var(--border)",
@@ -245,7 +246,7 @@ export default function DashboardPage() {
             {Array.from({ length: 2 }).map((_, i) => (
               <div
                 key={i}
-                className="h-[13rem] animate-pulse rounded-3xl border"
+                className="h-52 animate-pulse rounded-3xl border"
                 style={{
                   background: "var(--surface-1)",
                   borderColor: "var(--border)",
@@ -545,5 +546,13 @@ export default function DashboardPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function DashboardPagePage() {
+  return (
+    <AuthGuard>
+      <DashboardPageContent />
+    </AuthGuard>
   );
 }

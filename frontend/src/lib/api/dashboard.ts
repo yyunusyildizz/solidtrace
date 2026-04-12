@@ -101,8 +101,8 @@ export async function getRecentActivity(token?: string) {
   );
 }
 
-export async function getAssets(token?: string) {
-  return apiGet<AssetListItemResponse[]>("/api/v1/assets?limit=10", token);
+export async function getAssets(token?: string, limit = 1000) {
+  return apiGet<AssetListItemResponse[]>(`/api/v1/assets?limit=${limit}`, token);
 }
 
 export async function getSigmaStats(token?: string) {

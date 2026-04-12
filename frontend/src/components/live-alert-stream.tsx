@@ -313,7 +313,7 @@ export default function LiveAlertStream() {
         </div>
       </div>
 
-      <div className="max-h-[360px] space-y-3 overflow-y-auto">
+      <div className="max-h-90 space-y-3 overflow-y-auto">
         {events.length === 0 ? (
           <div
             className="rounded-2xl border p-6 text-sm"

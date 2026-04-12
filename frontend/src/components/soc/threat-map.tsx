@@ -426,7 +426,7 @@ export default function ThreatMap() {
           </div>
 
           <div
-            className="relative h-[275px] overflow-hidden rounded-2xl border"
+            className="relative h-68.75 overflow-hidden rounded-2xl border"
             style={{
               borderColor: "var(--border)",
               background:

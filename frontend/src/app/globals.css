@@ -241,3 +241,10 @@ hr {
   border: 2px solid transparent;
   background-clip: padding-box;
 }
+html {
+  overflow-y: scroll;
+}
+
+body {
+  scrollbar-gutter: stable;
+}

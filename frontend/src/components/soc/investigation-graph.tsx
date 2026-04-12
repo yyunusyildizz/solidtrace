@@ -8,22 +8,39 @@ import {
   Shield,
   User,
   Waypoints,
+  Crosshair,
+  Link2,
+  Sparkles,
 } from "lucide-react";
 
-export type GraphNodeType = "alert" | "host" | "user" | "process" | "rule";
+export type GraphNodeType =
+  | "alert"
+  | "host"
+  | "user"
+  | "process"
+  | "rule"
+  | "incident";
 
 export interface InvestigationGraphNode {
   id: string;
   label?: string;
-  type: GraphNodeType;
+  type: GraphNodeType | string;
   risk?: number;
   meta?: string;
+  tactic?: string | null;
+  technique_id?: string | null;
+  technique_name?: string | null;
+  role?: string | null;
+  score?: number;
+  highlighted?: boolean;
 }
 
 export interface InvestigationGraphEdge {
   from: string;
   to: string;
   label?: string;
+  weight?: number;
+  highlighted?: boolean;
 }
 
 export interface InvestigationGraphData {
@@ -31,8 +48,10 @@ export interface InvestigationGraphData {
   edges: InvestigationGraphEdge[];
 }
 
-function nodeTone(type: GraphNodeType) {
+function nodeTone(type: string) {
   switch (type) {
+    case "incident":
+      return "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 dark:border-fuchsia-500/20 dark:bg-fuchsia-500/10 dark:text-fuchsia-300";
     case "alert":
       return "border-red-200 bg-red-50 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300";
     case "host":
@@ -48,8 +67,10 @@ function nodeTone(type: GraphNodeType) {
   }
 }
 
-function nodeIcon(type: GraphNodeType) {
+function nodeIcon(type: string) {
   switch (type) {
+    case "incident":
+      return <Sparkles size={14} />;
     case "alert":
       return <AlertTriangle size={14} />;
     case "host":
@@ -113,7 +134,8 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
-    setSelectedId(data.nodes[0]?.id ?? null);
+    const highlighted = data.nodes.find((node) => node.highlighted);
+    setSelectedId(highlighted?.id ?? data.nodes[0]?.id ?? null);
   }, [data]);
 
   const selectedNode = useMemo(
@@ -129,10 +151,14 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
   }, [data.edges, selectedNode]);
 
   const stats = useMemo(() => {
+    const highlighted = data.nodes.filter((node) => node.highlighted).length;
+    const mitre = data.nodes.filter((node) => node.technique_id).length;
     return {
       nodes: data.nodes.length,
       edges: data.edges.length,
       highRisk: data.nodes.filter((node) => (node.risk ?? 0) >= 70).length,
+      highlighted,
+      mitre,
     };
   }, [data]);
 
@@ -167,7 +193,7 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
             Investigation Graph
           </div>
           <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
-            Entity relationships derived from the selected investigation alert.
+            Incident graph with risk, MITRE context and highlighted pivot nodes.
           </div>
         </div>
 
@@ -184,10 +210,12 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
         </div>
       </div>
 
-      <div className="mb-4 grid gap-3 md:grid-cols-3">
+      <div className="mb-4 grid gap-3 md:grid-cols-5">
         <MiniStat label="Nodes" value={stats.nodes} />
         <MiniStat label="Edges" value={stats.edges} />
         <MiniStat label="High Risk" value={stats.highRisk} />
+        <MiniStat label="Highlighted" value={stats.highlighted} />
+        <MiniStat label="MITRE Tagged" value={stats.mitre} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
@@ -221,10 +249,15 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                           borderColor: "var(--foreground)",
                           background: "color-mix(in srgb, var(--surface-1) 92%, transparent)",
                         }
-                      : {
-                          borderColor: "var(--border)",
-                          background: "var(--surface-0)",
-                        }
+                      : node.highlighted
+                        ? {
+                            borderColor: "color-mix(in srgb, var(--foreground) 40%, var(--border))",
+                            background: "color-mix(in srgb, var(--surface-1) 90%, transparent)",
+                          }
+                        : {
+                            borderColor: "var(--border)",
+                            background: "var(--surface-0)",
+                          }
                   }
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -236,6 +269,19 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                           {nodeIcon(node.type)}
                           {node.type}
                         </span>
+                        {node.highlighted ? (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
+                            style={{
+                              borderColor: "var(--border)",
+                              background: "var(--surface-1)",
+                              color: "var(--muted-strong)",
+                            }}
+                          >
+                            <Crosshair size={11} />
+                            highlighted
+                          </span>
+                        ) : null}
                       </div>
 
                       <div className="mt-3 truncate text-sm font-semibold">
@@ -244,6 +290,47 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                       <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
                         {node.meta || "No metadata"}
                       </div>
+
+                      {(node.tactic || node.technique_id || node.role) ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {node.tactic ? (
+                            <span
+                              className="inline-flex rounded-full border px-2 py-1 text-[10px]"
+                              style={{
+                                borderColor: "var(--border)",
+                                background: "var(--surface-1)",
+                                color: "var(--muted-strong)",
+                              }}
+                            >
+                              {node.tactic}
+                            </span>
+                          ) : null}
+                          {node.technique_id ? (
+                            <span
+                              className="inline-flex rounded-full border px-2 py-1 text-[10px]"
+                              style={{
+                                borderColor: "var(--border)",
+                                background: "var(--surface-1)",
+                                color: "var(--muted-strong)",
+                              }}
+                            >
+                              {node.technique_id}
+                            </span>
+                          ) : null}
+                          {node.role ? (
+                            <span
+                              className="inline-flex rounded-full border px-2 py-1 text-[10px]"
+                              style={{
+                                borderColor: "var(--border)",
+                                background: "var(--surface-1)",
+                                color: "var(--muted-strong)",
+                              }}
+                            >
+                              {node.role}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className={`text-sm font-black ${riskTone(node.risk)}`}>
@@ -296,6 +383,19 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                     {nodeIcon(selectedNode.type)}
                     {selectedNode.type}
                   </span>
+                  {selectedNode.highlighted ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
+                      style={{
+                        borderColor: "var(--border)",
+                        background: "var(--surface-1)",
+                        color: "var(--muted-strong)",
+                      }}
+                    >
+                      <Crosshair size={11} />
+                      highlighted
+                    </span>
+                  ) : null}
                 </div>
 
                 <div className="text-lg font-black">
@@ -303,6 +403,11 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                 </div>
                 <div className="mt-2 text-sm" style={{ color: "var(--muted-strong)" }}>
                   {selectedNode.meta || "No metadata available."}
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <MiniStat label="Risk" value={selectedNode.risk ?? 0} />
+                  <MiniStat label="Score" value={selectedNode.score ?? 0} />
                 </div>
 
                 <div className="mt-4">
@@ -327,6 +432,15 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                     </div>
                   </div>
                 </div>
+
+                {(selectedNode.tactic || selectedNode.technique_id || selectedNode.technique_name || selectedNode.role) ? (
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <MiniStat label="Tactic" value={selectedNode.tactic || "—"} />
+                    <MiniStat label="Technique" value={selectedNode.technique_id || "—"} />
+                    <MiniStat label="Technique Name" value={selectedNode.technique_name || "—"} />
+                    <MiniStat label="Role" value={selectedNode.role || "—"} />
+                  </div>
+                ) : null}
               </section>
 
               <section
@@ -337,9 +451,10 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                 }}
               >
                 <div
-                  className="mb-3 text-xs font-bold uppercase tracking-[0.18em]"
+                  className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em]"
                   style={{ color: "var(--muted)" }}
                 >
+                  <Link2 size={12} />
                   Related Edges
                 </div>
 
@@ -354,12 +469,28 @@ export default function InvestigationGraph({ data }: { data: InvestigationGraphD
                         key={`${edge.from}-${edge.to}-${index}`}
                         className="rounded-xl border px-3 py-3 text-sm"
                         style={{
-                          borderColor: "var(--border)",
+                          borderColor: edge.highlighted
+                            ? "color-mix(in srgb, var(--foreground) 35%, var(--border))"
+                            : "var(--border)",
                           background: "color-mix(in srgb, var(--surface-1) 88%, transparent)",
                         }}
                       >
-                        <div className="font-medium">
-                          {edge.from} → {edge.to}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="font-medium break-all">
+                            {edge.from} → {edge.to}
+                          </div>
+                          {typeof edge.weight === "number" ? (
+                            <span
+                              className="inline-flex rounded-full border px-2 py-1 text-[10px]"
+                              style={{
+                                borderColor: "var(--border)",
+                                background: "var(--surface-1)",
+                                color: "var(--muted-strong)",
+                              }}
+                            >
+                              weight: {edge.weight.toFixed(2)}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
                           {edge.label || "Unlabelled relationship"}
