@@ -1,3 +1,7 @@
+// Replace your existing src/api_client.rs with this version.
+// Critical fix: send_event() no longer wraps command_line/details with
+// "Severity: ... | Info: ...", which was poisoning backend detection.
+
 #![allow(deprecated)]
 
 use crate::agent_config::AgentConfig;
@@ -14,15 +18,15 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use url::Url;
 
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
-    Client::builder()
-        .pool_idle_timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(10)
-        .tcp_keepalive(Duration::from_secs(60))
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .expect("HTTP Client oluşturulamadı!")
-});
+use crate::command_security::{
+    build_command_signing_message,
+    check_and_store_nonce,
+    validate_timestamps,
+    verify_command_signature,
+};
+use crate::tls_pinning::build_http_client;
+
+static HTTP_CLIENT: Lazy<Client> = Lazy::new(build_http_client);
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SecurityEvent {
@@ -38,14 +42,22 @@ pub struct SecurityEvent {
     pub serial: Option<String>,
 }
 
-#[derive(Deserialize, Debug, Clone)]
-struct CommandMessage {
+#[derive(Debug, Clone, Deserialize)]
+pub struct CommandMessage {
     #[serde(rename = "type")]
     pub msg_type: String,
+    pub version: Option<u8>,
+    pub command_id: Option<String>,
     pub action: Option<String>,
     pub target_hostname: Option<String>,
+    pub tenant_id: Option<String>,
+    pub issued_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub nonce: Option<String>,
+    pub signature: Option<String>,
+    #[serde(default)]
+    pub args: serde_json::Value,
     pub target_pid: Option<u32>,
-    pub command_id: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -135,6 +147,79 @@ impl ApiClient {
         ApiClient { hostname: host, tx }
     }
 
+    fn verify_signed_command(&self, cmd: &CommandMessage) -> Result<(), String> {
+        let cfg = AgentConfig::get();
+
+        if cfg.command_verify_key.trim().is_empty() {
+            return Err("agent command public key yapılandırılmamış".to_string());
+        }
+
+        let version = cmd.version.unwrap_or(1);
+
+        let command_id = cmd
+            .command_id
+            .as_deref()
+            .ok_or_else(|| "command_id eksik".to_string())?;
+
+        let action = cmd
+            .action
+            .as_deref()
+            .ok_or_else(|| "action eksik".to_string())?;
+
+        let target_hostname = cmd
+            .target_hostname
+            .as_deref()
+            .ok_or_else(|| "target_hostname eksik".to_string())?;
+
+        let tenant_id = cmd
+            .tenant_id
+            .as_deref()
+            .ok_or_else(|| "tenant_id eksik".to_string())?;
+
+        let issued_at = cmd
+            .issued_at
+            .as_deref()
+            .ok_or_else(|| "issued_at eksik".to_string())?;
+
+        let expires_at = cmd
+            .expires_at
+            .as_deref()
+            .ok_or_else(|| "expires_at eksik".to_string())?;
+
+        let nonce = cmd
+            .nonce
+            .as_deref()
+            .ok_or_else(|| "nonce eksik".to_string())?;
+
+        let signature = cmd
+            .signature
+            .as_deref()
+            .ok_or_else(|| "signature eksik".to_string())?;
+
+        if !self.is_command_for_me(Some(target_hostname)) {
+            return Err("command target bu agent değil".to_string());
+        }
+
+        validate_timestamps(issued_at, expires_at)?;
+
+        let message = build_command_signing_message(
+            version,
+            command_id,
+            action,
+            target_hostname,
+            tenant_id,
+            issued_at,
+            expires_at,
+            nonce,
+            &cmd.args,
+        );
+
+        verify_command_signature(&cfg.command_verify_key, &message, signature)?;
+        check_and_store_nonce(command_id, nonce)?;
+
+        Ok(())
+    }
+
     pub async fn send_event(
         &self,
         event_type: &str,
@@ -146,13 +231,15 @@ impl ApiClient {
         let now = Local::now().to_rfc3339();
         let username = whoami::username();
 
+        let normalized_details = details.trim().to_string();
+
         let event = SecurityEvent {
             event_type: event_type.to_string(),
             hostname: self.hostname.clone(),
             user: username,
             pid,
-            details: details.to_string(),
-            command_line: format!("Severity: {} | Info: {}", severity, details),
+            details: normalized_details.clone(),
+            command_line: normalized_details,
             timestamp: now,
             severity: severity.to_uppercase(),
             serial,
@@ -174,6 +261,8 @@ impl ApiClient {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let cfg = AgentConfig::get();
+        let url = format!("{}/api/v1/report_hash", cfg.server_base);
+
         let payload = serde_json::json!({
             "hostname": self.hostname,
             "file_path": path,
@@ -181,18 +270,7 @@ impl ApiClient {
             "pid": pid
         });
 
-        let url = format!("{}/api/v1/report_hash", cfg.server_base);
-
-        if let Err(e) = HTTP_CLIENT
-            .post(&url)
-            .header("X-Agent-Key", &cfg.agent_key)
-            .json(&payload)
-            .send()
-            .await
-        {
-            println!("⚠️ Hash raporlanamadı: {}", e);
-        }
-
+        post_json_with_agent_auth(&url, &cfg.agent_key, &payload, "HASH").await;
         Ok(())
     }
 
@@ -264,10 +342,6 @@ impl ApiClient {
                                 continue;
                             }
 
-                            if !self.is_command_for_me(cmd.target_hostname.as_deref()) {
-                                continue;
-                            }
-
                             let action = match cmd.action.clone() {
                                 Some(a) if !a.trim().is_empty() => a,
                                 _ => {
@@ -281,46 +355,73 @@ impl ApiClient {
                                 .clone()
                                 .unwrap_or_else(|| self.synthetic_command_id(&action));
 
-                            println!("📩 [EMİR ALINDI] {} ({})", action, command_id);
+                            match self.verify_signed_command(&cmd) {
+                                Ok(_) => {
+                                    println!("📩 [SIGNED COMMAND OK] {} ({})", action, command_id);
 
-                            let ack = CommandAckMessage {
-                                msg_type: "COMMAND_ACK",
-                                command_id: command_id.clone(),
-                                hostname: &self.hostname,
-                                action: &action,
-                                status: "received",
-                                timestamp: now_iso(),
-                            };
+                                    let ack = CommandAckMessage {
+                                        msg_type: "COMMAND_ACK",
+                                        command_id: command_id.clone(),
+                                        hostname: &self.hostname,
+                                        action: &action,
+                                        status: "received",
+                                        timestamp: now_iso(),
+                                    };
 
-                            if let Err(e) = write
-                                .send(Message::Text(
-                                    serde_json::to_string(&ack).unwrap_or_default(),
-                                ))
-                                .await
-                            {
-                                eprintln!("⚠️ [WS] ACK gönderilemedi: {}", e);
-                            }
+                                    if let Err(e) = write
+                                        .send(Message::Text(
+                                            serde_json::to_string(&ack).unwrap_or_default(),
+                                        ))
+                                        .await
+                                    {
+                                        eprintln!("⚠️ [WS] ACK gönderilemedi: {}", e);
+                                    }
 
-                            let result = self.handle_command(action.clone(), cmd).await;
+                                    let result = self.handle_command(action.clone(), cmd).await;
 
-                            let result_msg = CommandResultMessage {
-                                msg_type: "COMMAND_RESULT",
-                                command_id,
-                                hostname: &self.hostname,
-                                action: &result.0,
-                                status: if result.1.success { "completed" } else { "failed" },
-                                success: result.1.success,
-                                message: result.1.message,
-                                timestamp: now_iso(),
-                            };
+                                    let result_msg = CommandResultMessage {
+                                        msg_type: "COMMAND_RESULT",
+                                        command_id,
+                                        hostname: &self.hostname,
+                                        action: &result.0,
+                                        status: if result.1.success { "completed" } else { "failed" },
+                                        success: result.1.success,
+                                        message: result.1.message,
+                                        timestamp: now_iso(),
+                                    };
 
-                            if let Err(e) = write
-                                .send(Message::Text(
-                                    serde_json::to_string(&result_msg).unwrap_or_default(),
-                                ))
-                                .await
-                            {
-                                eprintln!("⚠️ [WS] RESULT gönderilemedi: {}", e);
+                                    if let Err(e) = write
+                                        .send(Message::Text(
+                                            serde_json::to_string(&result_msg).unwrap_or_default(),
+                                        ))
+                                        .await
+                                    {
+                                        eprintln!("⚠️ [WS] RESULT gönderilemedi: {}", e);
+                                    }
+                                }
+                                Err(reason) => {
+                                    eprintln!("🚫 [WS] COMMAND reddedildi: {} ({})", reason, command_id);
+
+                                    let result_msg = CommandResultMessage {
+                                        msg_type: "COMMAND_RESULT",
+                                        command_id,
+                                        hostname: &self.hostname,
+                                        action: &action,
+                                        status: "rejected",
+                                        success: false,
+                                        message: reason,
+                                        timestamp: now_iso(),
+                                    };
+
+                                    if let Err(e) = write
+                                        .send(Message::Text(
+                                            serde_json::to_string(&result_msg).unwrap_or_default(),
+                                        ))
+                                        .await
+                                    {
+                                        eprintln!("⚠️ [WS] REJECT RESULT gönderilemedi: {}", e);
+                                    }
+                                }
                             }
                         }
                         Ok(Message::Ping(payload)) => {
@@ -418,8 +519,7 @@ impl ApiClient {
             }
             "SCAN_PROCESSES" => CommandExecutionResult {
                 success: true,
-                message: "Process scan talebi alındı; sonuçlar event akışıyla raporlanacak"
-                    .to_string(),
+                message: "Process scan talebi alındı; sonuçlar event akışıyla raporlanacak".to_string(),
             },
             "USB_DISABLE" => {
                 println!("🔌 [USB] Devre dışı bırakılıyor...");
@@ -470,10 +570,7 @@ impl ApiClient {
             } else {
                 CommandExecutionResult {
                     success: false,
-                    message: format!(
-                        "PID {} sonlandırılamadı (yetki veya koruma sorunu)",
-                        pid_u32
-                    ),
+                    message: format!("PID {} sonlandırılamadı (yetki veya koruma sorunu)", pid_u32),
                 }
             }
         } else {
@@ -501,6 +598,31 @@ fn now_iso() -> String {
     Utc::now().to_rfc3339()
 }
 
+async fn post_json_with_agent_auth<T: Serialize + ?Sized>(
+    url: &str,
+    agent_key: &str,
+    payload: &T,
+    log_label: &str,
+) {
+    match HTTP_CLIENT
+        .post(url)
+        .header("X-Agent-Key", agent_key)
+        .header("Content-Type", "application/json")
+        .json(payload)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            if !status.is_success() {
+                eprintln!("⚠️ [{}] backend status={}", log_label, status);
+            }
+        }
+        Err(e) => {
+            eprintln!("⚠️ [{}] istek başarısız: {}", log_label, e);
+        }
+    }    
+}
 async fn flush_logs(buffer: &[SecurityEvent]) {
     if buffer.is_empty() {
         return;
@@ -508,15 +630,5 @@ async fn flush_logs(buffer: &[SecurityEvent]) {
 
     let cfg = AgentConfig::get();
     let url = format!("{}/api/v1/ingest", cfg.server_base);
-
-    if let Err(e) = HTTP_CLIENT
-        .post(&url)
-        .header("X-Agent-Key", &cfg.agent_key)
-        .header("Content-Type", "application/json")
-        .json(buffer)
-        .send()
-        .await
-    {
-        eprintln!("⚠️ [INGEST HATASI] Loglar gönderilemedi: {}", e);
-    }
+    post_json_with_agent_auth(&url, &cfg.agent_key, buffer, "INGEST").await;
 }

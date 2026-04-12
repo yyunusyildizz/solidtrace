@@ -23,6 +23,12 @@ pub struct AgentConfig {
     pub tls_fingerprint: Option<String>,
     /// Bounded channel kapasitesi
     pub channel_capacity: usize,
+    /// İmzalı komut doğrulama public key'i
+    pub command_verify_key: String,
+    /// İmzalı komutlar için kabul edilebilir en yüksek zaman sapması (saniye)
+    pub command_max_skew_secs: u64,
+    /// Tekrar saldırılarını önlemek için nonce önbellek boyutu
+    pub nonce_cache_size: usize,
 }
 
 impl AgentConfig {
@@ -66,10 +72,26 @@ impl AgentConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(4096);
 
+        let command_verify_key = env_or("SOLIDTRACE_COMMAND_PUBKEY", "");
+
+        let command_max_skew_secs = std::env::var("SOLIDTRACE_COMMAND_MAX_SKEW")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90);
+
+        let nonce_cache_size = std::env::var("SOLIDTRACE_NONCE_CACHE_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4096);
+
         if agent_key == "solidtrace-agent-key-2024" {
             println!(
                 "⚠️  [CONFIG] Varsayılan agent key kullanılıyor (geliştirme modu).\n   Production için: set SOLIDTRACE_AGENT_KEY=<tenant-key>"
             );
+        }
+
+        if command_verify_key.is_empty() {
+            println!("⚠️  [CONFIG] SOLIDTRACE_COMMAND_PUBKEY boş. Agent tüm signed command'ları reddedecek.");
         }
 
         AgentConfig {
@@ -80,6 +102,9 @@ impl AgentConfig {
             queue_path,
             tls_fingerprint,
             channel_capacity,
+            command_verify_key,
+            command_max_skew_secs,
+            nonce_cache_size,
         }
     }
 

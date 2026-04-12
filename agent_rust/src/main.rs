@@ -3,6 +3,7 @@
 mod agent_config;
 mod tls_pinning;
 mod integrity;
+mod command_security;
 mod api_client;
 mod file_monitor;
 mod usb_monitor;
@@ -18,24 +19,18 @@ mod updater;
 mod event_log_monitor;
 
 use std::env;
+use std::future::Future;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use api_client::ApiClient;
 use agent_config::AgentConfig;
+use api_client::ApiClient;
 use integrity::Watchdog;
 use is_elevated::is_elevated;
 use tokio::time::sleep;
 use winreg::enums::*;
 use winreg::RegKey;
-
-async fn heartbeat_loop(watchdog: Arc<Watchdog>, task_name: &'static str, interval_secs: u64) {
-    loop {
-        watchdog.heartbeat(task_name).await;
-        sleep(Duration::from_secs(interval_secs)).await;
-    }
-}
 
 fn request_elevation() {
     let exe_path = match env::current_exe() {
@@ -77,8 +72,49 @@ fn enable_persistence() -> std::io::Result<()> {
     Ok(())
 }
 
+fn spawn_monitored_loop<F, Fut>(
+    watchdog: Arc<Watchdog>,
+    task_name: &'static str,
+    heartbeat_secs: u64,
+    restart_delay_secs: u64,
+    mut factory: F,
+) where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            let mut task_handle = Box::pin(tokio::spawn(factory()));
+            let mut ticker = tokio::time::interval(Duration::from_secs(heartbeat_secs));
+
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        watchdog.heartbeat(task_name).await;
+                    }
+                    result = &mut task_handle => {
+                        match result {
+                            Ok(_) => {
+                                eprintln!("⚠️  [WATCHDOG] '{}' task'ı beklenmedik şekilde sonlandı. Yeniden başlatılıyor.", task_name);
+                            }
+                            Err(e) => {
+                                eprintln!("🔥 [WATCHDOG] '{}' task'ı panic ile sonlandı: {:?}", task_name, e);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            sleep(Duration::from_secs(restart_delay_secs)).await;
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+
     if !is_elevated() {
         println!("⚠️  [SYSTEM] Admin izni alınıyor...");
         request_elevation();
@@ -91,6 +127,11 @@ async fn main() {
     println!("============================================");
 
     integrity::run_security_checks().await;
+
+    if let Err(e) = tls_pinning::verify_server_tls().await {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    }
 
     let cfg = AgentConfig::get();
 
@@ -112,147 +153,101 @@ async fn main() {
     }
 
     let client = Arc::new(ApiClient::new());
-
     let (watchdog, _wd_handle) = Watchdog::spawn(300);
     let watchdog = Arc::new(watchdog);
 
-    // WebSocket command loop
     {
         let c = Arc::clone(&client);
         let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "ws_listener", 60, 5, move || {
+            let c = Arc::clone(&c);
+            async move { c.connect_and_listen().await }
+        });
+    }
 
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "ws_listener", 60));
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "process_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { process_monitor::run_monitor(c).await }
+        });
+    }
 
-            loop {
-                c.connect_and_listen().await;
-                wd.heartbeat("ws_listener").await;
-                sleep(Duration::from_secs(5)).await;
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "file_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { file_monitor::run_monitor(c).await }
+        });
+    }
+
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "usb_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { usb_monitor::run_monitor(c).await }
+        });
+    }
+
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "registry_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { registry_monitor::run_monitor(c).await }
+        });
+    }
+
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "canary_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { canary_monitor::deploy_and_watch(c).await }
+        });
+    }
+
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "network_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { network_monitor::run_monitor(c).await }
+        });
+    }
+
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "event_log_monitor", 60, 2, move || {
+            let c = Arc::clone(&c);
+            async move { event_log_monitor::run_monitor(c).await }
+        });
+    }
+
+    {
+        let c = Arc::clone(&client);
+        let wd = Arc::clone(&watchdog);
+        spawn_monitored_loop(wd, "deep_scanner", 60, 5, move || {
+            let c = Arc::clone(&c);
+            async move {
+                scanner::run_deep_scan(c).await;
             }
         });
     }
 
-    // Process monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "process_monitor", 60));
-            process_monitor::run_monitor(c).await;
-        });
-    }
-
-    // File monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "file_monitor", 60));
-            file_monitor::run_monitor(c).await;
-        });
-    }
-
-    // USB monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "usb_monitor", 60));
-            usb_monitor::run_monitor(c).await;
-        });
-    }
-
-    // Registry monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "registry_monitor", 60));
-            registry_monitor::run_monitor(c).await;
-        });
-    }
-
-    // Canary monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "canary_monitor", 60));
-            canary_monitor::deploy_and_watch(c).await;
-        });
-    }
-
-    // Network monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "network_monitor", 60));
-            network_monitor::run_monitor(c).await;
-        });
-    }
-
-    // Event log monitor
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "event_log_monitor", 60));
-            event_log_monitor::run_monitor(c).await;
-        });
-    }
-
-    // Deep scanner loop
-    {
-        let c = Arc::clone(&client);
-        let wd = Arc::clone(&watchdog);
-
-        tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "deep_scanner", 60));
-
-            loop {
-                let c2 = Arc::clone(&c);
-                let scan_handle = tokio::spawn(async move {
-                    scanner::run_deep_scan(c2).await;
-                });
-
-                match scan_handle.await {
-                    Ok(_) => {
-                        println!("✅ [SCAN] Tarama tamamlandı.");
-                        wd.heartbeat("deep_scanner").await;
-                        sleep(Duration::from_secs(600)).await;
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️  [SCAN] Tarama task'ı panic ile sonlandı: {:?}", e);
-                        eprintln!("   YARA/scanner katmanı sorun yaşadı; diğer modüller aktif kalıyor.");
-                        wd.heartbeat("deep_scanner").await;
-                        sleep(Duration::from_secs(300)).await;
-                    }
-                }
-            }
-        });
-    }
-
-    // YARA updater loop
     {
         let wd = Arc::clone(&watchdog);
         let rules_path_for_loop = rules_path_string.clone();
-
         tokio::spawn(async move {
-            tokio::spawn(heartbeat_loop(Arc::clone(&wd), "updater", 60));
-
             loop {
+                wd.heartbeat("updater").await;
                 if let Err(e) = updater::update_yara_rules(&rules_path_for_loop).await {
                     eprintln!("⚠️  [UPDATER] Periyodik güncelleme başarısız: {}", e);
                 }
-                wd.heartbeat("updater").await;
                 sleep(Duration::from_secs(3600)).await;
             }
         });
