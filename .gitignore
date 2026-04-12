@@ -1,86 +1,96 @@
-# ========================
-# 🔒 GÜVENLİK VE SIRLAR (EN KRİTİK)
-# ========================
-# Çevresel değişkenler
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Python env / secrets
+# =========================
 .env
 .env.*
 !.env.example
 
-# Sertifikalar ve Anahtarlar (ASLA GİTMEMELİ)
-*.pem
-*.key
-*.cert
-*.pfx
-*.p12
-secrets/
-
-# ========================
-# 🗄️ VERİTABANI (Local DB)
-# ========================
-*.db
+# =========================
+# Backend runtime / local db / logs
+# =========================
+*.log
+logs/
 *.sqlite
 *.sqlite3
-backend/data/
-# Not: backend/solidtrace.db zaten *.db kuralına takılacağı için ayrıca yazmaya gerek yok.
+*.db
 
-# ========================
-# ⚙️ GENEL / İŞLETİM SİSTEMİ / IDE
-# ========================
-.DS_Store
-Thumbs.db
-ehthumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
-*.exe
-*.dll
-*.so
-*.dylib
-*.log
+# Alembic cache-like artifacts
+alembic/*.pyc
+alembic/versions/*.pyc
 
-# ========================
-# 🦀 RUST (Agent)
-# ========================
-# Derleme çıktıları (Global olarak nerede olursa olsun target yoksayılır)
-**/target/
-**/*.pdb
-**/*.rs.bk
+# =========================
+# Node / Next.js
+# =========================
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
 
-# NOT: Cargo.lock dosyasını bilerek buraya eklemiyoruz.
-# Bir "Uygulama" (Binary) geliştirdiğimiz için versiyonları kitlemek önemlidir.
+# Frontend env / secrets
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
-# ========================
-# 🐍 PYTHON (Backend)
-# ========================
-__pycache__/
-*.py[cod]
-*$py.class
-**/venv/
-**/.venv/
-**/env/
-.pytest_cache/
-.coverage
-htmlcov/
-*.egg-info/
+# =========================
+# Rust
+# =========================
+target/
 
-# Sadece requirements.txt dosyasına izin ver, diğer tüm txt dosyalarını yoksay
-backend/*.txt
-!backend/requirements.txt
+# Cargo.lock:
+# Uygulama reposunda genelde commit edilir.
+# Kütüphane olsaydı ignore edebilirdik.
+# Bu yüzden ignore ETMİYORUZ.
 
-# ========================
-# ⚛️ NODE.JS / NEXT.JS (Frontend)
-# ========================
-**/node_modules/
-frontend/.next/
-frontend/out/
-frontend/build/
-frontend/dist/
-frontend/.vercel/
-frontend/*.tsbuildinfo
+# Rust env / secrets
+agent_rust/.env
+agent_rust/.env.*
+!agent_rust/.env.example
 
-# Debug Logları
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
+# =========================
+# Project-specific temporary / generated
+# =========================
+backend_backup/
+proje_yapisi.txt
+
+# Chat/export/temp files
+Yapıştırılan metin*.txt
+page(*).tsx
+*.tmp
+*.bak
+*.orig
+
+# =========================
+# Keys / generated secrets
+# =========================
+*.pem
+*.key
+*.crt
