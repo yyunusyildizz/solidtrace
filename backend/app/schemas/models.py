@@ -718,3 +718,315 @@ class UEBAProfilesResponse(BaseModel):
     last_profile_update_at: Optional[str] = None
     profiles: list[UEBAProfileItem] = []
     note: Optional[str] = None
+
+# ---------------------------------------------------------------------------
+# CASE / INCIDENT / CAMPAIGN OVERRIDES (canonical final definitions)
+# ---------------------------------------------------------------------------
+
+class CaseCreateRequest(BaseModel):
+    title: str
+    description: Optional[str] = None
+    severity: Optional[str] = "INFO"
+    owner: Optional[str] = None
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("title boş olamaz")
+        return value[:255]
+
+
+class CaseAssignRequest(BaseModel):
+    owner: str
+
+    @field_validator("owner")
+    @classmethod
+    def validate_owner(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("owner boş olamaz")
+        return value[:150]
+
+
+class CaseStatusUpdateRequest(BaseModel):
+    status: Literal["open", "acknowledged", "resolved", "closed"]
+
+
+class CaseNoteUpdateRequest(BaseModel):
+    note: str
+
+    @field_validator("note")
+    @classmethod
+    def validate_note(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("note boş olamaz")
+        return value[:4000]
+
+
+class CaseResponse(BaseModel):
+    id: str
+    tenant_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    status: str = "open"
+    severity: str = "INFO"
+    owner: Optional[str] = None
+    analyst_note: Optional[str] = None
+    created_at: str
+    updated_at: str
+    closed_at: Optional[str] = None
+    related_alert_count: int = 0
+    related_alerts: list[AlertResponse] = []
+
+
+class CaseDetailResponse(CaseResponse):
+    timeline: list[dict] = []
+    linked_hosts: list[str] = []
+    linked_users: list[str] = []
+    max_risk_score: int = 0
+    avg_risk_score: float = 0.0
+    critical_alert_count: int = 0
+    high_alert_count: int = 0
+
+
+class InvestigationCampaignItem(BaseModel):
+    campaign_key: str
+    campaign_score: float = 0.0
+    campaign_confidence: Optional[str] = None
+    investigation_count: int = 0
+    top_severity: Optional[str] = None
+    normalized_family: Optional[str] = None
+    family_confidence: Optional[str] = None
+    hosts: list[str] = []
+    users: list[str] = []
+    rules: list[str] = []
+    sample_investigation_ids: list[str] = []
+    latest_seen: Optional[str] = None
+
+
+class InvestigationCampaignListResponse(BaseModel):
+    total_campaigns: int = 0
+    items: list[InvestigationCampaignItem] = []
+
+
+class GlobalCampaignItem(BaseModel):
+    campaign_family: str
+    user: str
+    campaign_score: float = 0.0
+    campaign_confidence: Optional[str] = None
+    total_events: int = 0
+    affected_hosts: list[str] = []
+    top_severity: Optional[str] = None
+    sample_investigation_ids: list[str] = []
+    latest_seen: Optional[str] = None
+
+
+class GlobalCampaignListResponse(BaseModel):
+    total_campaigns: int = 0
+    items: list[GlobalCampaignItem] = []
+
+
+class GlobalCampaignEscalationResponse(BaseModel):
+    campaign_family: str
+    user: str
+    recommended_severity: str
+    incident_priority: int = 0
+    spread_depth: int = 0
+    affected_hosts: list[str] = []
+    total_events: int = 0
+    escalation_reasons: list[str] = []
+
+
+class GlobalCampaignResponsePlan(BaseModel):
+    campaign_family: str
+    user: str
+    auto_incident: bool = False
+    incident_title: Optional[str] = None
+    playbook: Optional[str] = None
+    recommended_actions: list[str] = []
+    priority: int = 0
+
+
+class InvestigationGraphNode(BaseModel):
+    id: str
+    label: str
+    type: str
+    risk: Optional[int] = None
+    meta: Optional[str] = None
+    tactic: Optional[str] = None
+    role: Optional[str] = None
+    score: Optional[float] = 0.0
+    highlighted: bool = False
+
+
+class InvestigationGraphEdge(BaseModel):
+    from_: str = Field(alias="from")
+    to: str
+    label: str
+    weight: Optional[float] = 1.0
+    highlighted: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class InvestigationGraphMeta(BaseModel):
+    summary: Optional[str] = None
+    related_alerts: int = 0
+    severity: Optional[str] = None
+    status: Optional[str] = None
+    entry_nodes: list[str] = []
+    pivot_nodes: list[str] = []
+    impact_nodes: list[str] = []
+    primary_attack_path: list[str] = []
+    kill_chain_phases: list[str] = []
+    campaign_confidence: Optional[str] = None
+    related_investigation_ids: list[str] = []
+
+
+class InvestigationGraphResponse(BaseModel):
+    alert_id: str
+    title: str
+    nodes: list[InvestigationGraphNode] = []
+    edges: list[InvestigationGraphEdge] = []
+    meta: Optional[InvestigationGraphMeta] = None
+
+
+class IncidentResponse(BaseModel):
+    id: str
+    campaign_family: str
+    user: str
+    title: str
+    severity: str
+    priority: int = 0
+    status: str = "open"
+    owner: Optional[str] = None
+    analyst_note: Optional[str] = None
+    playbook: Optional[str] = None
+    recommended_actions: list[str] = []
+    affected_hosts: list[str] = []
+    total_events: int = 0
+    spread_depth: int = 0
+    source_type: str = "global_campaign"
+    source_key: Optional[str] = None
+    confidence: str = "medium"               # EKLENDİ
+    attack_story: list[str] = []             # EKLENDİ
+    created_at: str
+    updated_at: str
+
+
+class IncidentCreateFromCampaignResponse(BaseModel):
+    status: str
+    incident: IncidentResponse
+
+
+class IncidentListResponse(BaseModel):
+    total: int = 0
+    items: list[IncidentResponse] = []
+
+
+class IncidentStatusUpdateRequest(BaseModel):
+    status: Literal["open", "acknowledged", "resolved"]
+
+
+class IncidentAssignRequest(BaseModel):
+    owner: str
+
+    @field_validator("owner")
+    @classmethod
+    def validate_owner_incident(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("owner boş olamaz")
+        return value[:150]
+
+
+class IncidentNoteUpdateRequest(BaseModel):
+    note: str
+
+    @field_validator("note")
+    @classmethod
+    def validate_note_incident(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("note boş olamaz")
+        return value[:4000]
+
+
+class IncidentTimelineItem(BaseModel):
+    id: str
+    incident_id: str
+    event_type: str
+    actor: Optional[str] = None
+    title: str
+    details: Optional[str] = None
+    created_at: str
+
+
+class IncidentTimelineResponse(BaseModel):
+    incident_id: str
+    items: list[IncidentTimelineItem] = []
+
+class IncidentAlertListResponse(BaseModel):
+    incident_id: str
+    total: int = 0
+    items: list[AlertResponse] = []
+
+class IncidentAlertListResponse(BaseModel):
+    incident_id: str
+    total: int = 0
+    items: list[AlertResponse] = []
+
+class IncidentGraphResponse(BaseModel):
+    incident_id: str
+    title: str
+    nodes: list[InvestigationGraphNode] = []
+    edges: list[InvestigationGraphEdge] = []
+    meta: InvestigationGraphMeta    
+
+class AttackChainStep(BaseModel):
+    step: int
+    stage: str
+    node_id: str
+    label: str
+    node_type: str
+    evidence: Optional[str] = None
+    risk: int = 0
+    technique_id: Optional[str] = None
+    technique_name: Optional[str] = None
+    tactic: Optional[str] = None
+
+
+class IncidentAttackChainResponse(BaseModel):
+    incident_id: str
+    title: str
+    confidence: str
+    primary_user: Optional[str] = None
+    primary_process: Optional[str] = None
+    primary_rule: Optional[str] = None
+    affected_hosts: list[str] = []
+    kill_chain_phases: list[str] = []
+    steps: list[AttackChainStep] = []
+
+class IncidentResponseAction(BaseModel):
+    action: str
+    automated: bool = False
+    reason: Optional[str] = None
+    priority: int = 0
+
+
+class IncidentResponsePlanResponse(BaseModel):
+    incident_id: str
+    title: str
+    confidence: str
+    auto_execute: bool = False
+    recommended_actions: list[IncidentResponseAction] = []
+    escalation_reasons: list[str] = []
+
+class IncidentExecutionResult(BaseModel):
+    incident_id: str
+    executed: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []

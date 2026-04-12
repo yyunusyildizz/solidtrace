@@ -15,7 +15,7 @@ from typing import Any, Callable, Optional
 
 from sqlalchemy import and_
 
-from app.database.db_manager import SessionLocal, DetectionQueueModel
+from app.database.db_manager import DetectionQueueModel, SessionLocal
 
 logger = logging.getLogger("SolidTrace.Queue")
 
@@ -65,6 +65,61 @@ class DetectionQueueService:
             db.add_all(items)
             db.commit()
             return len(items)
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def requeue_stale_processing(self, stale_after_seconds: int = 120) -> int:
+        db = SessionLocal()
+        try:
+            now = datetime.now(timezone.utc)
+            rows = (
+                db.query(DetectionQueueModel)
+                .filter(DetectionQueueModel.status == STATUS_PROCESSING)
+                .all()
+            )
+
+            updated = 0
+            for row in rows:
+                original_locked_by = row.locked_by
+
+                if not row.locked_at:
+                    row.status = STATUS_PENDING
+                    row.locked_by = None
+                    row.locked_at = None
+                    row.error_message = "Recovered item with missing lock timestamp"
+                    updated += 1
+                    continue
+
+                try:
+                    locked_at = datetime.fromisoformat(row.locked_at.replace("Z", "+00:00"))
+                except Exception:
+                    row.status = STATUS_PENDING
+                    row.locked_by = None
+                    row.locked_at = None
+                    row.error_message = "Recovered item with invalid lock timestamp"
+                    updated += 1
+                    continue
+
+                age = (now - locked_at).total_seconds()
+                if age >= stale_after_seconds:
+                    row.status = STATUS_PENDING
+                    row.locked_by = None
+                    row.locked_at = None
+                    row.error_message = (
+                        f"Recovered stale processing lock from {original_locked_by or 'unknown'}"
+                    )
+                    updated += 1
+
+            if updated:
+                db.commit()
+
+            return updated
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -72,21 +127,40 @@ class DetectionQueueService:
         db = SessionLocal()
         try:
             now = utcnow_iso()
-            rows = (
-                db.query(DetectionQueueModel)
-                .filter(
-                    and_(
-                        DetectionQueueModel.status == STATUS_PENDING,
-                        DetectionQueueModel.available_at <= now,
-                    )
-                )
-                .order_by(DetectionQueueModel.created_at.asc())
-                .limit(self.batch_size)
-                .all()
-            )
+            dialect = db.bind.dialect.name if db.bind else "unknown"
 
-            claimed_ids = []
+            if dialect == "postgresql":
+                rows = (
+                    db.query(DetectionQueueModel)
+                    .filter(
+                        and_(
+                            DetectionQueueModel.status == STATUS_PENDING,
+                            DetectionQueueModel.available_at <= now,
+                        )
+                    )
+                    .order_by(DetectionQueueModel.created_at.asc())
+                    .with_for_update(skip_locked=True)
+                    .limit(self.batch_size)
+                    .all()
+                )
+            else:
+                rows = (
+                    db.query(DetectionQueueModel)
+                    .filter(
+                        and_(
+                            DetectionQueueModel.status == STATUS_PENDING,
+                            DetectionQueueModel.available_at <= now,
+                        )
+                    )
+                    .order_by(DetectionQueueModel.created_at.asc())
+                    .limit(self.batch_size)
+                    .all()
+                )
+
+            claimed_ids: list[str] = []
             for row in rows:
+                if row.status != STATUS_PENDING:
+                    continue
                 row.status = STATUS_PROCESSING
                 row.locked_by = self.worker_name
                 row.locked_at = now
@@ -97,7 +171,14 @@ class DetectionQueueService:
             if not claimed_ids:
                 return []
 
-            return db.query(DetectionQueueModel).filter(DetectionQueueModel.id.in_(claimed_ids)).all()
+            return (
+                db.query(DetectionQueueModel)
+                .filter(DetectionQueueModel.id.in_(claimed_ids))
+                .all()
+            )
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -111,6 +192,9 @@ class DetectionQueueService:
                 item.locked_at = None
                 item.error_message = None
                 db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -132,18 +216,25 @@ class DetectionQueueService:
             else:
                 delay_seconds = min(60, 2 ** item.attempts)
                 item.status = STATUS_PENDING
-                item.available_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+                item.available_at = (
+                    datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)
+                ).isoformat()
 
             db.commit()
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
     async def run_forever(self, process_fn: Callable[[dict[str, Any], Optional[str]], Any]) -> None:
         self._running = True
-        logger.info(f"🧵 Queue worker başladı: {self.worker_name}")
+        logger.info("🧵 Queue worker başladı: %s", self.worker_name)
 
         while self._running:
             try:
+                self.requeue_stale_processing(stale_after_seconds=120)
+
                 batch = self.claim_batch()
                 if not batch:
                     await asyncio.sleep(self.poll_interval)
@@ -152,13 +243,45 @@ class DetectionQueueService:
                 for item in batch:
                     try:
                         payload = json.loads(item.payload_json)
+
+                        # Early queue-side drop for obviously noisy synthetic process events.
+                        text = " ".join(
+                            [
+                                str(payload.get("type") or ""),
+                                str(payload.get("details") or ""),
+                                str(payload.get("command_line") or ""),
+                            ]
+                        ).lower()
+                        if str(payload.get("type") or "").upper() in {"PROCESS_START", "PROCESS_CREATED"}:
+                            noisy = [
+                                "audiodg.exe",
+                                "explorer.exe",
+                                "mscopilot_proxy.exe",
+                                "microsoftedgeupdate.exe",
+                                "7zfm.exe",
+                                "git-remote-https.exe",
+                                "notepad.exe",
+                                "smartscreen.exe",
+                                "python.exe",
+                                "uvicorn.exe",
+                            ]
+                            if any(marker in text for marker in noisy):
+                                logger.info(
+                                    "queue_noise_suppressed id=%s tenant=%s type=%s",
+                                    item.id,
+                                    item.tenant_id,
+                                    payload.get("type"),
+                                )
+                                self.mark_done(item.id)
+                                continue
+
                         await process_fn(payload, item.tenant_id)
                         self.mark_done(item.id)
                     except Exception as exc:
-                        logger.error(f"Queue item işlenemedi | id={item.id} | err={exc}")
+                        logger.error("Queue item işlenemedi | id=%s | err=%s", item.id, exc)
                         self.mark_failed(item.id, str(exc))
             except Exception as exc:
-                logger.error(f"Queue worker döngü hatası: {exc}")
+                logger.error("Queue worker döngü hatası: %s", exc)
                 await asyncio.sleep(self.poll_interval)
 
     def stop(self) -> None:

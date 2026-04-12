@@ -1,72 +1,58 @@
-"""
-correlation_engine.py
-Sliding window tabanlı korelasyon motoru
+from __future__ import annotations
 
-QRadar / Logsign'ın temel farkı burada:
-Tek olaya bakmak değil, zaman içindeki örüntüyü yakalamak.
-
-Desteklenen korelasyon kuralları:
-  - Brute Force: 5 dakikada 5+ başarısız login
-  - Credential Stuffing: Aynı IP'den farklı kullanıcılara başarısız login
-  - Lateral Movement: Kısa sürede birden fazla makineye bağlantı
-  - Log Temizleme: Event log silindikten sonra gelen aktivite
-  - Impossible Travel: Aynı kullanıcı kısa sürede farklı coğrafyadan login
-  - Scheduled Task Abuse: Yeni servis + yeni scheduled task aynı anda
-  - Process Injection Pattern: Birden fazla process anomalisi aynı makinede
-"""
-
-import asyncio
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
 from enum import Enum
+from typing import Dict, List, Optional
+
+from app.detection.detection_policy import BENIGN_TEXT_MARKERS, normalize_text
 
 logger = logging.getLogger("SolidTrace.Correlation")
 
+STRONG_ATTACK_MARKERS = [
+    "mimikatz", "sekurlsa", "lsass dump", "procdump lsass", "comsvcs.dll, minidump",
+    "powershell", "invoke-webrequest", "downloadstring", "frombase64string",
+    "psexec", "paexec", "wmic", "process call create", "/node:",
+    "vssadmin delete shadows", "wbadmin delete catalog",
+]
 
 class RuleSeverity(str, Enum):
-    LOW      = "LOW"
-    MEDIUM   = "MEDIUM"
-    HIGH     = "HIGH"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
     CRITICAL = "CRITICAL"
-
 
 @dataclass
 class CorrelationAlert:
-    rule_name:   str
-    severity:    RuleSeverity
+    rule_name: str
+    severity: RuleSeverity
     description: str
-    hostname:    str
-    user:        str
-    evidence:    List[dict]          # Tetikleyen olaylar
-    timestamp:   datetime = field(default_factory=datetime.utcnow)
-    mitre:       List[dict] = field(default_factory=list)
+    hostname: str
+    user: str
+    evidence: List[dict]
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    mitre: List[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        score_map = {"CRITICAL": 90, "HIGH": 70, "MEDIUM": 50, "LOW": 30}
         return {
-            "type":        "CORRELATION_ALERT",
-            "rule":        self.rule_name,
-            "severity":    self.severity.value,
+            "type": "CORRELATION_ALERT",
+            "rule": self.rule_name,
+            "severity": self.severity.value,
             "description": self.description,
-            "hostname":    self.hostname,
-            "user":        self.user,
+            "hostname": self.hostname,
+            "user": self.user,
             "evidence_count": len(self.evidence),
-            "timestamp":   self.timestamp.isoformat() + "Z",
-            "mitre":       self.mitre,
-            "risk": {
-                "score": {"CRITICAL": 90, "HIGH": 70, "MEDIUM": 50, "LOW": 30}[self.severity.value],
-                "level": self.severity.value,
-            }
+            "timestamp": self.timestamp.isoformat() + "Z",
+            "mitre": self.mitre,
+            "risk": {"score": score_map[self.severity.value], "level": self.severity.value},
         }
 
-
 class TimeWindow:
-    """Sliding window — belirli zaman aralığındaki olayları tutar."""
-
     def __init__(self, seconds: int):
-        self.window   = timedelta(seconds=seconds)
+        self.window = timedelta(seconds=seconds)
         self._events: deque = deque()
 
     def add(self, event: dict) -> None:
@@ -82,6 +68,7 @@ class TimeWindow:
         return [e for _, e in self._events]
 
     def unique_values(self, key: str) -> set:
+        self._cleanup()
         return {e.get(key) for _, e in self._events if e.get(key)}
 
     def _cleanup(self) -> None:
@@ -89,307 +76,183 @@ class TimeWindow:
         while self._events and now - self._events[0][0] > self.window:
             self._events.popleft()
 
-
 class CorrelationEngine:
-    """
-    Olay akışını alır, zaman penceresi içinde örüntü arar,
-    korelasyon alarmı üretir.
-    """
-
     def __init__(self, alert_callback=None):
-        """
-        alert_callback: Korelasyon alarmı üretildiğinde çağrılacak async fonksiyon.
-        Örnek: async def on_alert(alert: CorrelationAlert): ...
-        """
         self.alert_callback = alert_callback
+        self._failed_logins: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
+        self._success_logins: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
+        self._process_events: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(60))
+        self._lateral_moves: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(600))
+        self._file_changes: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(10))
+        self._persistence: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
+        self._ip_failures: Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
+        self._log_cleared_at: Dict[str, Optional[datetime]] = defaultdict(lambda: None)
+        self._last_alert: Dict[str, datetime] = {}
+        self._suppress_secs = 300
+        logger.info("🔗 [CORRELATOR] Korelasyon motoru başlatıldı. Hardened mode aktif.")
 
-        # Kullanıcı bazlı pencereler
-        self._failed_logins:   Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))   # 5 dk
-        self._success_logins:  Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
-        self._process_events:  Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(60))    # 1 dk
-        self._lateral_moves:   Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(600))   # 10 dk
-        self._file_changes:    Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(10))    # 10 sn
-        self._persistence:     Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))   # 5 dk
+    def _event_text(self, event: dict) -> str:
+        return normalize_text(
+            event.get("type"),
+            event.get("rule"),
+            event.get("details"),
+            event.get("command_line"),
+        )
 
-        # IP bazlı pencereler (credential stuffing için)
-        self._ip_failures:     Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
+    def _event_is_noise(self, event: dict) -> bool:
+        risk = int(event.get("risk_score") or event.get("risk", {}).get("score", 0) or 0)
+        text = self._event_text(event)
+        event_type = str(event.get("type") or "").upper()
 
-        # Makine bazlı pencereler
-        self._host_anomalies:  Dict[str, TimeWindow] = defaultdict(lambda: TimeWindow(300))
-
-        # Log temizleme flag — temizleme sonrası aktiviteyi yakala
-        self._log_cleared_at:  Dict[str, Optional[datetime]] = defaultdict(lambda: None)
-
-        # Alarm suppression — aynı kural 60 sn içinde tekrar alarm üretmesin
-        self._last_alert:      Dict[str, datetime] = {}
-        self._suppress_secs    = 60
-
-        logger.info("🔗 [CORRELATOR] Korelasyon motoru başlatıldı. %d kural aktif.", 8)
-
-    # ------------------------------------------------------------------
-    # ANA GİRİŞ NOKTASI
-    # ------------------------------------------------------------------
+        if risk and risk < 40:
+            return True
+        if any(marker in text for marker in BENIGN_TEXT_MARKERS):
+            return True
+        if event_type in {"PROCESS_START", "PROCESS_CREATED", "PROCESS_CREATE_EVT", "LOGON_SUCCESS", "SPECIAL_LOGON", "PERSISTENCE_DETECTED"}:
+            if not any(marker in text for marker in STRONG_ATTACK_MARKERS):
+                return True
+        return False
 
     async def process_event(self, event: dict) -> None:
-        """Her gelen olayı tüm korelasyon kurallarından geçir."""
-        event_type = event.get("type", "")
-        hostname   = event.get("hostname", "unknown")
-        user       = event.get("user", "unknown")
+        event_type = str(event.get("type") or "")
+        hostname = str(event.get("hostname") or "unknown")
+        user = str(event.get("user") or "unknown")
 
-        # Olayı ilgili pencerelere ekle
+        if self._event_is_noise(event):
+            return
+
         self._route_event(event_type, event, hostname, user)
-
-        # Tüm kuralları değerlendir
         await self._evaluate_rules(event, hostname, user)
 
     def _route_event(self, event_type: str, event: dict, hostname: str, user: str) -> None:
-        """Olayı ilgili zaman pencerelerine yönlendir."""
-
         if event_type == "LOGON_FAILURE":
             self._failed_logins[user].add(event)
             ip = event.get("details", "")
             if ip:
                 self._ip_failures[ip].add(event)
-
         elif event_type == "LOGON_SUCCESS":
             self._success_logins[user].add(event)
-            # Lateral movement: farklı makinelerden login
             self._lateral_moves[user].add(event)
-
-        elif event_type in ("PROCESS_CREATE_EVT", "PROCESS_CREATED", "MALWARE_DETECTED"):
+        elif event_type in ("PROCESS_CREATE_EVT", "PROCESS_CREATED", "MALWARE_DETECTED", "PROCESS_START"):
             self._process_events[hostname].add(event)
-            self._host_anomalies[hostname].add(event)
-
         elif event_type in ("RANSOMWARE_ALERT", "FILE_ACTIVITY"):
             self._file_changes[hostname].add(event)
-
-        elif event_type in ("SCHTASK_CREATED", "SERVICE_INSTALLED", "PERSISTENCE_DETECTED"):
+        elif event_type in ("PERSISTENCE_DETECTED", "SERVICE_INSTALLED", "SCHTASK_CREATED"):
             self._persistence[hostname].add(event)
-            self._host_anomalies[hostname].add(event)
-
         elif event_type == "LOG_CLEARED":
             self._log_cleared_at[hostname] = datetime.utcnow()
-            logger.critical("🚨 [CORRELATOR] Log temizlendi: %s", hostname)
-
-    # ------------------------------------------------------------------
-    # KURAL DEĞERLENDİRME
-    # ------------------------------------------------------------------
 
     async def _evaluate_rules(self, event: dict, hostname: str, user: str) -> None:
-        alerts = []
+        candidates = [
+            self._rule_bruteforce(user, hostname),
+            self._rule_credential_stuffing(event, hostname),
+            self._rule_lateral_movement(user),
+            self._rule_log_cleared_followed_by_activity(event, hostname, user),
+            self._rule_schtask_plus_service(hostname, user),
+        ]
+        for alert in candidates:
+            if alert:
+                await self._emit(alert)
 
-        # Kural 1: Brute Force
-        alert = self._rule_brute_force(user, hostname)
-        if alert: alerts.append(alert)
-
-        # Kural 2: Credential Stuffing
-        alert = self._rule_credential_stuffing(event, hostname)
-        if alert: alerts.append(alert)
-
-        # Kural 3: Lateral Movement
-        alert = self._rule_lateral_movement(user, hostname)
-        if alert: alerts.append(alert)
-
-        # Kural 4: Log Silme + Aktivite
-        alert = self._rule_post_log_clear(event, hostname, user)
-        if alert: alerts.append(alert)
-
-        # Kural 5: Persistence Storm (kısa sürede birden fazla persistence)
-        alert = self._rule_persistence_storm(hostname, user)
-        if alert: alerts.append(alert)
-
-        # Kural 6: Ransomware (kitlesel dosya değişimi)
-        alert = self._rule_ransomware_pattern(hostname, user)
-        if alert: alerts.append(alert)
-
-        # Kural 7: Process Anomali Fırtınası
-        alert = self._rule_process_storm(hostname, user)
-        if alert: alerts.append(alert)
-
-        # Kural 8: Başarılı Login Sonrası Persistence
-        alert = self._rule_logon_then_persistence(user, hostname)
-        if alert: alerts.append(alert)
-
-        for alert in alerts:
-            await self._emit(alert)
-
-    # ------------------------------------------------------------------
-    # KORELASYON KURALLARI
-    # ------------------------------------------------------------------
-
-    def _rule_brute_force(self, user: str, hostname: str) -> Optional[CorrelationAlert]:
-        """5 dakikada 5+ başarısız login = Brute Force."""
-        threshold = 5
-        window    = self._failed_logins[user]
-
-        if window.count() >= threshold:
+    def _rule_bruteforce(self, user: str, hostname: str) -> Optional[CorrelationAlert]:
+        logins = self._failed_logins[user]
+        if logins.count() >= 5:
             return CorrelationAlert(
-                rule_name   = "BRUTE_FORCE",
-                severity    = RuleSeverity.HIGH,
-                description = f"{user} hesabına 5 dakikada {window.count()} başarısız giriş denemesi",
-                hostname    = hostname,
-                user        = user,
-                evidence    = window.events()[-5:],
-                mitre       = [{"technique": "T1110", "tactic": "Credential Access", "name": "Brute Force"}],
+                "BRUTE_FORCE",
+                RuleSeverity.HIGH,
+                f"{user} için 5 dakikada 5+ başarısız giriş tespit edildi",
+                hostname,
+                user,
+                logins.events()[-5:],
+                [{"technique": "T1110", "tactic": "Credential Access", "name": "Brute Force"}],
             )
         return None
 
     def _rule_credential_stuffing(self, event: dict, hostname: str) -> Optional[CorrelationAlert]:
-        """Aynı IP'den 3+ farklı kullanıcıya başarısız login = Credential Stuffing."""
-        ip = event.get("details", "")
-        if not ip or event.get("type") != "LOGON_FAILURE":
+        details = str(event.get("details") or "")
+        ip_key = details if "." in details else None
+        if not ip_key:
             return None
-
-        window = self._ip_failures[ip]
-        unique_users = window.unique_values("user")
-
-        if len(unique_users) >= 3:
+        failures = self._ip_failures[ip_key]
+        if len(failures.unique_values("user")) >= 3 and failures.count() >= 5:
             return CorrelationAlert(
-                rule_name   = "CREDENTIAL_STUFFING",
-                severity    = RuleSeverity.HIGH,
-                description = f"{ip} adresinden {len(unique_users)} farklı hesaba giriş denemesi",
-                hostname    = hostname,
-                user        = ", ".join(list(unique_users)[:5]),
-                evidence    = window.events()[-5:],
-                mitre       = [{"technique": "T1110.004", "tactic": "Credential Access", "name": "Credential Stuffing"}],
+                "CREDENTIAL_STUFFING",
+                RuleSeverity.HIGH,
+                "Aynı kaynaktan farklı kullanıcılara çoklu başarısız giriş",
+                hostname,
+                "multiple",
+                failures.events()[-5:],
+                [{"technique": "T1110.004", "tactic": "Credential Access", "name": "Credential Stuffing"}],
             )
         return None
 
-    def _rule_lateral_movement(self, user: str, hostname: str) -> Optional[CorrelationAlert]:
-        """10 dakikada 3+ farklı makineye başarılı login = Lateral Movement."""
-        window   = self._lateral_moves[user]
-        machines = window.unique_values("hostname")
-
-        if len(machines) >= 3 and hostname not in machines:
-            machines.add(hostname)
-            if len(machines) >= 3:
-                return CorrelationAlert(
-                    rule_name   = "LATERAL_MOVEMENT",
-                    severity    = RuleSeverity.CRITICAL,
-                    description = f"{user} 10 dakikada {len(machines)} farklı makineye bağlandı",
-                    hostname    = hostname,
-                    user        = user,
-                    evidence    = window.events()[-5:],
-                    mitre       = [{"technique": "T1021", "tactic": "Lateral Movement", "name": "Remote Services"}],
-                )
+    def _rule_lateral_movement(self, user: str) -> Optional[CorrelationAlert]:
+        moves = self._lateral_moves[user]
+        if len(moves.unique_values("hostname")) >= 3 and moves.count() >= 3:
+            events = moves.events()[-5:]
+            host = str(events[-1].get("hostname") or "unknown")
+            return CorrelationAlert(
+                "LATERAL_MOVEMENT",
+                RuleSeverity.HIGH,
+                f"{user} kısa sürede birden fazla makineye bağlandı",
+                host,
+                user,
+                events,
+                [{"technique": "T1021", "tactic": "Lateral Movement", "name": "Remote Services"}],
+            )
         return None
 
-    def _rule_post_log_clear(self, event: dict, hostname: str, user: str) -> Optional[CorrelationAlert]:
-        """Log silindikten sonraki 5 dakikada herhangi bir aktivite = şüpheli."""
+    def _rule_log_cleared_followed_by_activity(self, event: dict, hostname: str, user: str) -> Optional[CorrelationAlert]:
         cleared_at = self._log_cleared_at.get(hostname)
         if not cleared_at:
             return None
+        if datetime.utcnow() - cleared_at > timedelta(minutes=5):
+            return None
+        return CorrelationAlert(
+            "LOG_CLEARED_THEN_ACTIVITY",
+            RuleSeverity.CRITICAL,
+            f"{hostname} üzerinde log temizliği sonrası aktivite görüldü",
+            hostname,
+            user,
+            [event],
+            [{"technique": "T1070", "tactic": "Defense Evasion", "name": "Indicator Removal on Host"}],
+        )
 
-        if datetime.utcnow() - cleared_at < timedelta(minutes=5):
-            if event.get("type") != "LOG_CLEARED":
-                return CorrelationAlert(
-                    rule_name   = "POST_LOG_CLEAR_ACTIVITY",
-                    severity    = RuleSeverity.CRITICAL,
-                    description = f"Log temizlendikten sonra {hostname}'da aktivite tespit edildi",
-                    hostname    = hostname,
-                    user        = user,
-                    evidence    = [event],
-                    mitre       = [{"technique": "T1070.001", "tactic": "Defense Evasion", "name": "Clear Windows Event Logs"}],
-                )
-        return None
-
-    def _rule_persistence_storm(self, hostname: str, user: str) -> Optional[CorrelationAlert]:
-        """5 dakikada 2+ persistence aktivitesi = saldırı sonrası kalıcılık kurma."""
-        window = self._persistence[hostname]
-
-        if window.count() >= 2:
-            return CorrelationAlert(
-                rule_name   = "PERSISTENCE_STORM",
-                severity    = RuleSeverity.CRITICAL,
-                description = f"{hostname}'da 5 dakikada {window.count()} persistence aktivitesi",
-                hostname    = hostname,
-                user        = user,
-                evidence    = window.events(),
-                mitre       = [{"technique": "T1053", "tactic": "Persistence", "name": "Scheduled Task/Job"}],
-            )
-        return None
-
-    def _rule_ransomware_pattern(self, hostname: str, user: str) -> Optional[CorrelationAlert]:
-        """10 saniyede 20+ dosya değişikliği = Ransomware aktivitesi."""
-        window = self._file_changes[hostname]
-
-        if window.count() >= 20:
-            return CorrelationAlert(
-                rule_name   = "RANSOMWARE_CORRELATION",
-                severity    = RuleSeverity.CRITICAL,
-                description = f"{hostname}'da 10 saniyede {window.count()} dosya değişikliği",
-                hostname    = hostname,
-                user        = user,
-                evidence    = window.events()[-10:],
-                mitre       = [{"technique": "T1486", "tactic": "Impact", "name": "Data Encrypted for Impact"}],
-            )
-        return None
-
-    def _rule_process_storm(self, hostname: str, user: str) -> Optional[CorrelationAlert]:
-        """1 dakikada 5+ process anomalisi = injection veya dropper."""
-        window = self._host_anomalies[hostname]
-
-        if window.count() >= 5:
-            return CorrelationAlert(
-                rule_name   = "PROCESS_ANOMALY_STORM",
-                severity    = RuleSeverity.HIGH,
-                description = f"{hostname}'da 1 dakikada {window.count()} process anomalisi",
-                hostname    = hostname,
-                user        = user,
-                evidence    = window.events()[-5:],
-                mitre       = [{"technique": "T1055", "tactic": "Defense Evasion", "name": "Process Injection"}],
-            )
-        return None
-
-    def _rule_logon_then_persistence(self, user: str, hostname: str) -> Optional[CorrelationAlert]:
-        """Başarılı login sonrası 5 dakika içinde persistence = saldırgan foothold."""
-        logins      = self._success_logins[user]
+    def _rule_schtask_plus_service(self, hostname: str, user: str) -> Optional[CorrelationAlert]:
         persistence = self._persistence[hostname]
-
-        if logins.count() >= 1 and persistence.count() >= 1:
+        events = persistence.events()
+        if persistence.count() < 2:
+            return None
+        types = {str(e.get("type") or "").upper() for e in events}
+        if "SERVICE_INSTALLED" in types and "SCHTASK_CREATED" in types:
             return CorrelationAlert(
-                rule_name   = "LOGON_THEN_PERSISTENCE",
-                severity    = RuleSeverity.CRITICAL,
-                description = f"{user} giriş yaptıktan sonra {hostname}'da persistence kurdu",
-                hostname    = hostname,
-                user        = user,
-                evidence    = logins.events()[-2:] + persistence.events()[-2:],
-                mitre       = [
-                    {"technique": "T1078",  "tactic": "Initial Access",  "name": "Valid Accounts"},
-                    {"technique": "T1547",  "tactic": "Persistence",     "name": "Boot/Logon Autostart"},
+                "SERVICE_AND_SCHEDULED_TASK_ABUSE",
+                RuleSeverity.CRITICAL,
+                f"{hostname} üzerinde service + scheduled task kombinasyonu tespit edildi",
+                hostname,
+                user,
+                events[-4:],
+                [
+                    {"technique": "T1543", "tactic": "Persistence", "name": "Create or Modify System Process"},
+                    {"technique": "T1053", "tactic": "Execution", "name": "Scheduled Task/Job"},
                 ],
             )
         return None
 
-    # ------------------------------------------------------------------
-    # ALARM GÖNDERME + SUPPRESSION
-    # ------------------------------------------------------------------
-
     async def _emit(self, alert: CorrelationAlert) -> None:
-        """Alarmı suppression kontrolünden geçirerek gönder."""
-        key      = f"{alert.rule_name}:{alert.hostname}:{alert.user}"
-        now      = datetime.utcnow()
-        last     = self._last_alert.get(key)
-
+        key = f"{alert.rule_name}:{alert.hostname}:{alert.user}"
+        now = datetime.utcnow()
+        last = self._last_alert.get(key)
         if last and (now - last).total_seconds() < self._suppress_secs:
-            return  # Aynı alarm 60 sn içinde tekrar basılmasın
-
+            return
         self._last_alert[key] = now
-
-        logger.warning(
-            "🔗 [KORELASYON] %s | %s | %s → %s",
-            alert.severity.value, alert.rule_name, alert.user, alert.hostname
-        )
-
+        logger.warning("🔗 [KORELASYON] %s | %s | %s → %s", alert.severity.value, alert.rule_name, alert.user, alert.hostname)
         if self.alert_callback:
             await self.alert_callback(alert.to_dict())
 
 
-# ------------------------------------------------------------------
-# SOC ENGINE ENTEGRASYON NOKTASI
-# ------------------------------------------------------------------
-
 _engine: Optional[CorrelationEngine] = None
+
 
 def get_engine() -> CorrelationEngine:
     global _engine
@@ -397,8 +260,8 @@ def get_engine() -> CorrelationEngine:
         _engine = CorrelationEngine()
     return _engine
 
+
 async def init_engine(alert_callback) -> CorrelationEngine:
-    """soc_engine_advanced.py'den çağrılır."""
     global _engine
     _engine = CorrelationEngine(alert_callback=alert_callback)
     logger.info("🔗 [CORRELATOR] Motor başlatıldı ve callback bağlandı.")

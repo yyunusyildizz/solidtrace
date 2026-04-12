@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import uuid
 from datetime import datetime, timezone
 from importlib import import_module
@@ -38,7 +37,7 @@ limiter = Limiter(
 app = FastAPI(
     title="SolidTrace Ultimate SOC",
     description="Next-Gen AI Powered SIEM & EDR Backend",
-    version="6.2.0",
+    version="6.2.1",
 )
 
 app.state.limiter = limiter
@@ -68,7 +67,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=[
         "Authorization",
         "Content-Type",
@@ -100,27 +99,31 @@ async def system_status():
         "queue_worker": bool(app.state.queue_worker),
         "websocket_broadcast": bool(app.state.broadcast),
         "command_cleanup_worker": bool(app.state.command_cleanup_task),
+        "sigma_loaded": bool(app.state.sigma),
+        "correlator_loaded": bool(app.state.correlator),
+        "ueba_loaded": bool(app.state.ueba),
     }
 
 
 def safe_include_router(import_path: str, attr_name: str = "router", label: str | None = None):
     label = label or import_path
-
     try:
         module = import_module(import_path)
         router = getattr(module, attr_name)
         app.include_router(router)
         logger.info("✅ Router yüklendi: %s", label)
-    except Exception as exc:
-        logger.warning("⚠️ Router yüklenemedi: %s | %s", label, exc)
+    except Exception:
+        logger.exception("❌ Router yüklenemedi: %s", label)
 
 
 safe_include_router("app.api.routes_auth", label="auth")
 safe_include_router("app.api.routes_alerts", label="alerts")
 safe_include_router("app.api.routes_investigations", label="investigations")
+safe_include_router("app.api.routes_cases", label="cases")
 safe_include_router("app.api.routes_actions", label="actions")
 safe_include_router("app.api.routes_admin", label="admin")
 safe_include_router("app.api.routes_agents", label="agents")
+#safe_include_router("app.api.routes_agent_ingest", label="agent_ingest")
 safe_include_router("app.api.routes_assets", label="assets")
 safe_include_router("app.api.routes_dashboard", label="dashboard")
 safe_include_router("app.api.routes_sigma", label="sigma")
@@ -188,7 +191,6 @@ async def _handle_detection_alert(alert_dict: dict):
                 pid=int(alert_dict.get("pid", 0) or 0),
                 tenant_id=alert_dict.get("tenant_id"),
             )
-
             db.add(alert)
             db.commit()
             db.refresh(alert)
@@ -208,25 +210,14 @@ async def _init_detection_engines():
     ueba = None
     cef = None
 
-    correlation_module = _load_optional_module(
-        "app.detection.correlation_engine",
-        "correlation_engine",
-    )
-    sigma_module = _load_optional_module(
-        "app.detection.sigma_engine",
-        "sigma_engine",
-    )
-    ueba_module = _load_optional_module(
-        "app.detection.ueba_engine",
-        "ueba_engine",
-    )
+    correlation_module = _load_optional_module("app.detection.correlation_engine", "correlation_engine")
+    sigma_module = _load_optional_module("app.detection.sigma_engine", "sigma_engine")
+    ueba_module = _load_optional_module("app.detection.ueba_engine", "ueba_engine")
     cef_module = _load_optional_module("cef_output")
 
     if correlation_module and hasattr(correlation_module, "init_engine"):
         try:
-            correlator = await correlation_module.init_engine(
-                alert_callback=_handle_detection_alert
-            )
+            correlator = await correlation_module.init_engine(alert_callback=_handle_detection_alert)
             logger.info("🔗 Correlation engine aktif")
         except Exception as exc:
             logger.warning("⚠️ Correlation engine yüklenemedi: %s", exc)
@@ -264,7 +255,6 @@ async def _init_detection_engines():
 
     try:
         from app.api.routes_actions import set_engines
-
         set_engines(correlator, sigma, ueba, cef)
         logger.info("✅ Detection engine injection tamam")
     except Exception as exc:
@@ -285,7 +275,6 @@ async def _start_queue_worker():
         task = asyncio.create_task(worker.run_forever(process_single_event))
         app.state.queue_worker = worker
         app.state.queue_task = task
-
         logger.info("🧵 Detection queue worker başlatıldı.")
     except Exception as exc:
         logger.warning("⚠️ Detection queue worker başlatılamadı: %s", exc)
@@ -296,7 +285,6 @@ async def _start_command_cleanup_worker():
         while True:
             try:
                 from app.database.db_manager import SessionLocal, expire_stale_commands
-
                 db = SessionLocal()
                 try:
                     updated = expire_stale_commands(db, older_than_seconds=120)
@@ -304,12 +292,9 @@ async def _start_command_cleanup_worker():
                         logger.info("🧹 Expired stale commands: %s", updated)
                 finally:
                     db.close()
-
             except Exception as exc:
                 logger.warning("⚠️ Command cleanup worker hatası: %s", exc)
-
             await asyncio.sleep(30)
-
     return asyncio.create_task(_runner())
 
 
@@ -321,7 +306,6 @@ async def startup_event():
 
     try:
         from app.database.db_manager import init_db
-
         init_db()
     except Exception as exc:
         logger.critical("❌ init_db başarısız: %s", exc)
@@ -346,7 +330,7 @@ async def shutdown_event():
 
     if worker:
         try:
-            await worker.stop()
+            worker.stop()
         except Exception as exc:
             logger.warning("Queue worker stop hatası: %s", exc)
 
@@ -354,6 +338,8 @@ async def shutdown_event():
         task.cancel()
         try:
             await task
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 
@@ -361,22 +347,15 @@ async def shutdown_event():
         cleanup_task.cancel()
         try:
             await cleanup_task
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 
-    logger.info("🛑 SolidTrace shutdown tamam.")
+    try:
+        from app.services.threat_intel import close_client
+        await close_client()
+    except Exception:
+        pass
 
-
-if __name__ == "__main__":
-    import uvicorn
-
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-    uvicorn.run(
-        "app.main:app",
-        host="127.0.0.1",
-        port=8000,
-        reload=True,
-        log_level="info",
-    )
+    logger.info("✅ SolidTrace shutdown tamam")

@@ -26,7 +26,6 @@ from app.core.config import settings
 
 logger = logging.getLogger("SolidTrace.Security")
 
-
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not SECRET_KEY:
     logger.critical("JWT_SECRET_KEY tanımlı değil")
@@ -42,6 +41,7 @@ LOGIN_WINDOW_SECONDS = int(os.getenv("LOGIN_WINDOW_SECONDS", "300"))
 
 ISSUER = os.getenv("JWT_ISSUER", "solidtrace")
 AUDIENCE = os.getenv("JWT_AUDIENCE", "solidtrace-panel")
+APP_ENV = os.getenv("APP_ENV", "development").lower()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
@@ -53,6 +53,10 @@ if not AGENT_SECRET_KEK:
     logger.warning("AGENT_SECRET_KEK tanımlı değil. Agent auth aktif edilmeden önce set edilmeli.")
 
 LEGACY_AGENT_AUTH = settings.LEGACY_AGENT_AUTH
+
+if APP_ENV == "production" and LEGACY_AGENT_AUTH:
+    logger.critical("Production ortamında LEGACY_AGENT_AUTH=true olamaz")
+    raise RuntimeError("Production ortamında LEGACY_AGENT_AUTH=true olamaz")
 
 AGENT_NONCE_TTL_SECONDS = int(os.getenv("AGENT_NONCE_TTL_SECONDS", "300"))
 AGENT_RATE_LIMIT_PER_MINUTE = int(os.getenv("AGENT_RATE_LIMIT_PER_MINUTE", "120"))
@@ -325,7 +329,6 @@ async def verify_tenant_agent_key(
     if not x_agent_key:
         raise HTTPException(status_code=401, detail="X-Agent-Key gerekli")
 
-    # Basit dev fallback: settings.AGENT_KEY ile eşleşirse kabul et
     if settings.AGENT_KEY and secure_compare(settings.AGENT_KEY, x_agent_key):
         tenant = x_tenant_id or settings.DEFAULT_TENANT_ID
         logger.warning("Legacy agent auth kullanıldı (settings.AGENT_KEY) | tenant=%s", tenant)
@@ -402,9 +405,9 @@ class RateLimiterStore:
 
         if len(self._store) > self.max_items:
             oldest_keys = list(self._store.keys())[:1000]
-            for key in oldest_keys:
-                if not self._store.get(key):
-                    self._store.pop(key, None)
+            for old_key in oldest_keys:
+                if not self._store.get(old_key):
+                    self._store.pop(old_key, None)
 
         return True
 
@@ -425,46 +428,6 @@ async def get_agent_auth_headers(
         "nonce": x_agent_nonce,
         "signature": x_agent_signature,
     }
-
-
-async def verify_tenant_agent_key(
-    x_agent_key: Optional[str] = Header(None, alias="X-Agent-Key"),
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-Id"),
-) -> Optional[str]:
-    """
-    Geçici legacy doğrulama.
-    Yeni model signed agent request olacak.
-    """
-    if not LEGACY_AGENT_AUTH:
-        raise HTTPException(status_code=401, detail="Legacy agent auth devre dışı")
-
-    if not x_agent_key:
-        raise HTTPException(status_code=401, detail="X-Agent-Key gerekli")
-
-    # Basit dev fallback: settings.AGENT_KEY ile eşleşirse kabul et
-    if settings.AGENT_KEY and secure_compare(settings.AGENT_KEY, x_agent_key):
-        tenant = x_tenant_id or settings.DEFAULT_TENANT_ID
-        logger.warning("Legacy agent auth kullanıldı (settings.AGENT_KEY) | tenant=%s", tenant)
-        return tenant
-
-    from app.database.db_manager import SessionLocal, TenantModel
-
-    db = SessionLocal()
-    try:
-        if x_tenant_id:
-            tenant = db.query(TenantModel).filter(TenantModel.id == x_tenant_id).first()
-            if tenant and tenant.is_active and tenant.agent_key and secure_compare(tenant.agent_key, x_agent_key):
-                logger.warning("Legacy agent auth kullanıldı (tenant-scoped)")
-                return tenant.id
-
-        tenant = db.query(TenantModel).filter(TenantModel.agent_key == x_agent_key).first()
-        if tenant and tenant.is_active:
-            logger.warning("Legacy agent auth kullanıldı")
-            return tenant.id
-
-        raise HTTPException(status_code=401, detail="Geçersiz agent key")
-    finally:
-        db.close()
 
 
 def enforce_agent_nonce(agent_id: str, nonce: str) -> None:
@@ -518,7 +481,7 @@ async def verify_agent_request(
     ensure_agent_timestamp_fresh(timestamp)
     client_ip = get_client_ip(request)
 
-    from app.database.db_manager import SessionLocal, AgentModel
+    from app.database.db_manager import AgentModel, SessionLocal
 
     db = SessionLocal()
     try:
@@ -549,7 +512,7 @@ async def verify_agent_request(
 
         enforce_agent_nonce(agent_id, nonce)
 
-        agent.last_seen = datetime.now(timezone.utc)
+        agent.last_seen = datetime.now(timezone.utc).isoformat()
         db.commit()
 
         return agent.tenant_id

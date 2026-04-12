@@ -1,22 +1,7 @@
-"""
-sigma_engine.py
-Sigma kural desteği — açık kaynak Sigma kurallarını parse edip
-korelasyon motoruna entegre eder.
-
-Sigma: https://github.com/SigmaHQ/sigma
-Binlerce hazır kural var, SolidTrace bunları otomatik yükler ve çalıştırır.
-
-Desteklenen koşullar:
-  - keywords (içerik arama)
-  - selection + filter (alan bazlı eşleştirme)
-  - condition: selection and not filter
-  - timeframe + count (zaman pencereli sayım)
-  - MITRE ATT&CK otomatik eşleme
-"""
-
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,59 +11,154 @@ from typing import Dict, List, Optional
 import aiohttp
 import yaml
 
+from app.detection.detection_policy import (
+    NOISY_SIGMA_RULES,
+    has_strong_attack_context,
+    is_real_mimikatz,
+    is_real_powershell_attack,
+    is_sigma_generated_event,
+    normalize_text,
+)
+
 logger = logging.getLogger("SolidTrace.Sigma")
 
-# Sigma alan adlarını SolidTrace alan adlarına çevir
+ENABLE_RAW_SIGMA_CALLBACKS = os.getenv("ENABLE_RAW_SIGMA_CALLBACKS", "false").lower() == "true"
+
 FIELD_MAP = {
-    # Process
     "Image": "details",
-    "CommandLine": "details",
+    "CommandLine": "command_line",
     "ParentImage": "details",
     "OriginalFileName": "details",
     "ProcessName": "details",
-    # Network
     "DestinationIp": "details",
     "DestinationPort": "details",
     "SourceIp": "details",
-    # Account
     "TargetUserName": "user",
     "SubjectUserName": "user",
     "AccountName": "user",
-    # Host
     "ComputerName": "hostname",
     "Hostname": "hostname",
-    # Event
     "EventID": "type",
     "Channel": "type",
     "Provider_Name": "type",
-    # File
     "TargetFilename": "details",
-    "TargetObject": "details",  # Registry
+    "TargetObject": "details",
 }
 
-# Sigma logsource → SolidTrace event type mapping
 LOGSOURCE_MAP = {
-    ("windows", "security", None): ["LOGON_SUCCESS", "LOGON_FAILURE", "PROCESS_CREATE_EVT"],
-    ("windows", "process_creation", None): ["PROCESS_CREATE_EVT", "PROCESS_CREATED"],
+    ("windows", "security", None): ["LOGON_SUCCESS", "LOGON_FAILURE", "PROCESS_CREATE_EVT", "SPECIAL_LOGON"],
+    ("windows", "process_creation", None): ["PROCESS_CREATE_EVT", "PROCESS_CREATED", "PROCESS_START"],
     ("windows", "network_connection", None): ["NETWORK_CONNECTION"],
     ("windows", "file_event", None): ["FILE_ACTIVITY", "RANSOMWARE_ALERT"],
     ("windows", "registry_event", None): ["PERSISTENCE_DETECTED"],
-    ("windows", "powershell", None): ["PROCESS_CREATED"],
+    ("windows", "powershell", None): ["PROCESS_CREATED", "PROCESS_START"],
     ("windows", None, "system"): ["SERVICE_INSTALLED", "SCHTASK_CREATED"],
-    ("windows", None, "security"): ["LOGON_FAILURE", "LOGON_SUCCESS"],
+    ("windows", None, "security"): ["LOGON_FAILURE", "LOGON_SUCCESS", "SPECIAL_LOGON"],
 }
+
+EXTRA_BENIGN_MARKERS = [
+    "rust-analyzer",
+    "systemsettings.exe",
+    "nvtmmon.exe",
+    "rtkbtmanserv.exe",
+    "installassistservice.exe",
+    "immersivecontrolpanel",
+]
+
+TRUSTED_PATH_HINTS = [
+    r"yol: c:\windows\\",
+    r"yol: c:\program files\\",
+    r"yol: c:\program files (x86)\\",
+    r"c:\windows\\",
+    r"c:\program files\\",
+    r"c:\program files (x86)\\",
+]
+
+SUSPICIOUS_EXECUTION_HINTS = [
+    "powershell",
+    "cmd.exe",
+    "wmic",
+    "rundll32",
+    "psexec",
+    "paexec",
+    "procdump",
+    "mimikatz",
+    "sekurlsa",
+    "comsvcs.dll",
+    "net.exe",
+    "net user",
+    "schtasks",
+]
+
+
+def _norm(*parts: object) -> str:
+    return normalize_text(*parts)
+
+
+def _contains_extra_benign(text: str) -> bool:
+    t = _norm(text)
+    return any(marker in t for marker in EXTRA_BENIGN_MARKERS)
+
+
+def _looks_like_plain_path_event(text: str) -> bool:
+    t = _norm(text)
+    return t.startswith("yol: ") or t.startswith("yeni süreç:") or t.startswith("yeni surec:")
+
+
+def _has_any_suspicious_execution_hint(text: str) -> bool:
+    t = _norm(text)
+    return any(token in t for token in SUSPICIOUS_EXECUTION_HINTS)
+
+
+def _is_special_logon_noise(event_type: str, text: str) -> bool:
+    t = _norm(text)
+    return event_type == "SPECIAL_LOGON" and "eventid:4672" in t and "nt authority" in t and "system" in t
+
+
+def should_suppress_sigma_event(*, rule_name: Optional[str], event_type: Optional[str], details: Optional[str], command_line: Optional[str]) -> bool:
+    rule = str(rule_name or "").strip()
+    et = str(event_type or "").upper()
+    cmd = str(command_line or "").strip()
+    text = _norm(details, command_line)
+
+    if is_sigma_generated_event({"type": et, "rule": rule}):
+        return True
+    if not text:
+        return True
+    if _contains_extra_benign(text):
+        return True
+    if _is_special_logon_noise(et, text):
+        return True
+    if rule in NOISY_SIGMA_RULES and not cmd:
+        return True
+    if rule.endswith("Mimikatz Execution") and not is_real_mimikatz(text):
+        return True
+    if "PowerShell Download and Execution Cradles" in rule and not is_real_powershell_attack(text):
+        return True
+    if _looks_like_plain_path_event(text) and not _has_any_suspicious_execution_hint(text):
+        return True
+    if any(hint in text for hint in TRUSTED_PATH_HINTS) and not has_strong_attack_context(text):
+        return True
+    if et in {"PROCESS_START", "PROCESS_CREATED", "PROCESS_CREATE_EVT"}:
+        if not cmd:
+            return True
+        if not _has_any_suspicious_execution_hint(text):
+            return True
+        if rule in NOISY_SIGMA_RULES and not has_strong_attack_context(text):
+            return True
+    if et in {"SPECIAL_LOGON", "LOGON_SUCCESS"} and rule in NOISY_SIGMA_RULES and not has_strong_attack_context(text):
+        return True
+    return False
 
 
 @dataclass
 class SigmaRule:
-    """Yüklenmiş ve derlenmiş bir Sigma kuralı."""
-
     id: str
     title: str
     description: str
     severity: str
     status: str
-    tags: List[str]
+    tags: List[Dict]
     mitre: List[Dict]
     logsource: Dict
     detection: Dict
@@ -87,18 +167,10 @@ class SigmaRule:
     count_threshold: Optional[int] = None
 
     def sol_severity(self) -> str:
-        """Sigma severity → SolidTrace severity"""
-        return {
-            "low": "LOW",
-            "medium": "MEDIUM",
-            "high": "HIGH",
-            "critical": "CRITICAL",
-        }.get(self.severity.lower(), "MEDIUM")
+        return {"low": "LOW", "medium": "MEDIUM", "high": "HIGH", "critical": "CRITICAL"}.get(self.severity.lower(), "MEDIUM")
 
 
 class SigmaParser:
-    """YAML Sigma kuralını parse edip SigmaRule nesnesine çevirir."""
-
     def parse_file(self, path: Path) -> Optional[SigmaRule]:
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -115,6 +187,7 @@ class SigmaParser:
         tags = data.get("tags", [])
         mitre = []
         for tag in tags:
+            tag = str(tag)
             if tag.startswith("attack.t"):
                 technique = tag.replace("attack.", "").upper()
                 mitre.append({"technique": technique, "tactic": ""})
@@ -135,14 +208,13 @@ class SigmaParser:
             count_threshold = int(count_match.group(1))
 
         conditions = self._compile_conditions(data.get("detection", {}))
-
         return SigmaRule(
             id=data.get("id", "unknown"),
             title=data.get("title", "Unnamed Rule"),
             description=data.get("description", ""),
             severity=data.get("level", "medium"),
             status=data.get("status", "experimental"),
-            tags=tags,
+            tags=[],
             mitre=mitre,
             logsource=data.get("logsource", {}),
             detection=data.get("detection", {}),
@@ -160,116 +232,96 @@ class SigmaParser:
 
     def _compile_conditions(self, detection: dict) -> List:
         conditions = []
-
         for key, value in detection.items():
             if key in ("condition", "timeframe"):
                 continue
-
             if isinstance(value, dict):
                 field_conditions = []
                 for field_name, field_value in value.items():
                     mapped = FIELD_MAP.get(field_name, "details")
                     field_conditions.append((mapped, field_value))
                 conditions.append(("fields", key, field_conditions))
-
             elif isinstance(value, list):
                 conditions.append(("keywords", key, value))
-
         return conditions
 
 
 class SigmaMatcher:
-    """Bir olayın Sigma kuralıyla eşleşip eşleşmediğini kontrol eder."""
-
     def match(self, event: dict, rule: SigmaRule) -> bool:
         if not rule.conditions:
+            return False
+        if not self._event_type_matches_logsource(event, rule.logsource):
             return False
 
         group_results = {}
         for condition in rule.conditions:
             ctype = condition[0]
             group_name = condition[1]
-
             if ctype == "keywords":
-                keywords = condition[2]
-                group_results[group_name] = self._match_keywords(event, keywords)
-
+                group_results[group_name] = self._match_keywords(event, condition[2])
             elif ctype == "fields":
-                field_conditions = condition[2]
-                group_results[group_name] = self._match_fields(event, field_conditions)
+                group_results[group_name] = self._match_fields(event, condition[2])
 
         if not group_results:
             return False
 
-        condition_str = str(rule.detection.get("condition", ""))
-        return self._evaluate_condition(condition_str, group_results)
+        return self._evaluate_condition(str(rule.detection.get("condition", "")), group_results)
+
+    def _event_type_matches_logsource(self, event: dict, logsource: dict) -> bool:
+        product = (logsource.get("product") or "").lower() or None
+        category = (logsource.get("category") or "").lower() or None
+        service = (logsource.get("service") or "").lower() or None
+        allowed = LOGSOURCE_MAP.get((product, category, service), None)
+        if not allowed:
+            return True
+        return str(event.get("type") or "").upper() in {x.upper() for x in allowed}
 
     def _match_keywords(self, event: dict, keywords: List) -> bool:
         event_text = " ".join(str(v).lower() for v in event.values() if v)
         for kw in keywords:
             if isinstance(kw, str) and kw.lower() in event_text:
                 return True
-            elif isinstance(kw, list):
-                if all(str(k).lower() in event_text for k in kw):
-                    return True
+            if isinstance(kw, list) and all(str(k).lower() in event_text for k in kw):
+                return True
         return False
 
     def _match_fields(self, event: dict, field_conditions: List) -> bool:
         for field_name, expected in field_conditions:
             actual = str(event.get(field_name, "")).lower()
-
             if isinstance(expected, list):
                 if not any(self._value_match(actual, str(e)) for e in expected):
                     return False
             elif isinstance(expected, str):
                 if not self._value_match(actual, expected):
                     return False
-            elif isinstance(expected, bool):
-                pass
         return True
 
     def _value_match(self, actual: str, expected: str) -> bool:
         expected_lower = expected.lower()
-
         if "*" in expected_lower or "?" in expected_lower:
-            pattern = re.escape(expected_lower)
-            pattern = pattern.replace(r"\*", ".*").replace(r"\?", ".")
+            pattern = re.escape(expected_lower).replace(r"\*", ".*").replace(r"\?", ".")
             return bool(re.search(pattern, actual))
-
-        if expected_lower.startswith("|contains|"):
-            return expected_lower[10:] in actual
-        if expected_lower.startswith("|startswith|"):
-            return actual.startswith(expected_lower[12:])
-        if expected_lower.startswith("|endswith|"):
-            return actual.endswith(expected_lower[10:])
-
         return expected_lower in actual
 
     def _evaluate_condition(self, condition: str, results: Dict[str, bool]) -> bool:
         if not condition:
             return all(results.values())
-
         cond = condition.lower().strip()
-
         if cond in results:
             return results[cond]
-
         if "all of them" in cond:
             return all(results.values())
-
         if "1 of them" in cond or "any of them" in cond:
             return any(results.values())
 
         result = True
         op = "and"
         negate = False
-
         parts = re.split(r"\b(and|or|not)\b", cond)
         for part in parts:
             part = part.strip()
             if not part:
                 continue
-
             if part == "and":
                 op = "and"
                 continue
@@ -279,26 +331,16 @@ class SigmaMatcher:
             if part == "not":
                 negate = True
                 continue
-
             if part in results:
                 val = results[part]
                 if negate:
                     val = not val
                     negate = False
-
-                if op == "and":
-                    result = result and val
-                else:
-                    result = result or val
-
+                result = (result and val) if op == "and" else (result or val)
         return result
 
 
 class SigmaRuleLoader:
-    """
-    Sigma kurallarını disk veya GitHub'dan yükler.
-    """
-
     RULE_SOURCES = [
         "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_powershell_base64_encoded_cmd.yml",
         "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_powershell_download_iex.yml",
@@ -307,124 +349,6 @@ class SigmaRuleLoader:
         "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_net_user_add.yml",
         "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_schtasks_creation.yml",
         "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_wmic_remote_execution.yml",
-        "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_whoami_execution.yml",
-        "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_sc_create_service.yml",
-        "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_susp_disable_av_tools.yml",
-        "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_reg_add_run_key.yml",
-        "https://raw.githubusercontent.com/SigmaHQ/sigma/master/rules/windows/process_creation/proc_creation_win_net_recon.yml",
-    ]
-
-    BUILTIN_RULES = [
-        {
-            "title": "PowerShell Base64 Encoded Command",
-            "id": "builtin-ps-base64",
-            "status": "stable",
-            "description": "Base64 encode edilmiş PowerShell komutu — malware imzası",
-            "level": "high",
-            "tags": ["attack.t1059.001", "attack.execution"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "selection": {"CommandLine": ["*-EncodedCommand*", "*-enc *", "*-e *"]},
-                "condition": "selection",
-            },
-        },
-        {
-            "title": "Mimikatz Credential Dumping",
-            "id": "builtin-mimikatz",
-            "status": "stable",
-            "description": "Mimikatz araç tespiti",
-            "level": "critical",
-            "tags": ["attack.t1003", "attack.credential_access"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "keywords": ["mimikatz", "sekurlsa", "lsadump", "kerberos::"],
-                "condition": "keywords",
-            },
-        },
-        {
-            "title": "Net User Account Creation",
-            "id": "builtin-net-user-add",
-            "status": "stable",
-            "description": "net user komutu ile yeni hesap oluşturma",
-            "level": "high",
-            "tags": ["attack.t1136", "attack.persistence"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "selection": {"CommandLine": ["*net user * /add*", "*net localgroup administrators*"]},
-                "condition": "selection",
-            },
-        },
-        {
-            "title": "Scheduled Task Creation via Schtasks",
-            "id": "builtin-schtasks",
-            "status": "stable",
-            "description": "schtasks ile kalıcılık kurma",
-            "level": "medium",
-            "tags": ["attack.t1053.005", "attack.persistence"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "selection": {"CommandLine": ["*schtasks*/create*", "*schtasks* /sc *"]},
-                "condition": "selection",
-            },
-        },
-        {
-            "title": "PsExec Remote Execution",
-            "id": "builtin-psexec",
-            "status": "stable",
-            "description": "PsExec ile uzak komut çalıştırma — lateral movement",
-            "level": "high",
-            "tags": ["attack.t1021.002", "attack.lateral_movement"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "keywords": ["psexec", "paexec", "\\admin$\\psexesvc"],
-                "condition": "keywords",
-            },
-        },
-        {
-            "title": "Windows Defender Disabled",
-            "id": "builtin-defender-disable",
-            "status": "stable",
-            "description": "Windows Defender devre dışı bırakma — defense evasion",
-            "level": "high",
-            "tags": ["attack.t1562.001", "attack.defense_evasion"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "keywords": ["DisableRealtimeMonitoring", "DisableAntiSpyware", "Set-MpPreference"],
-                "condition": "keywords",
-            },
-        },
-        {
-            "title": "Registry Run Key Persistence",
-            "id": "builtin-run-key",
-            "status": "stable",
-            "description": "Registry Run anahtarı ile kalıcılık",
-            "level": "medium",
-            "tags": ["attack.t1547.001", "attack.persistence"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "selection": {
-                    "CommandLine": [
-                        "*\\CurrentVersion\\Run*",
-                        "*reg add*run*",
-                        "*HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run*",
-                    ]
-                },
-                "condition": "selection",
-            },
-        },
-        {
-            "title": "WMI Remote Execution",
-            "id": "builtin-wmi",
-            "status": "stable",
-            "description": "WMI ile uzak komut çalıştırma",
-            "level": "high",
-            "tags": ["attack.t1047", "attack.execution"],
-            "logsource": {"category": "process_creation", "product": "windows"},
-            "detection": {
-                "keywords": ["wmiexec", "wmic * /node:", "Invoke-WmiMethod"],
-                "condition": "keywords",
-            },
-        },
     ]
 
     def __init__(self, rules_dir: str = "sigma_rules"):
@@ -434,177 +358,115 @@ class SigmaRuleLoader:
 
     def load_local(self) -> List[SigmaRule]:
         rules = []
-        for path in self.rules_dir.rglob("*.yml"):
+        for path in list(self.rules_dir.glob("*.yml")) + list(self.rules_dir.glob("*.yaml")):
             rule = self.parser.parse_file(path)
-            if rule and rule.status in ("stable", "test"):
+            if rule:
                 rules.append(rule)
-        logger.info("📄 [SIGMA] %d yerel kural yüklendi.", len(rules))
         return rules
 
-    async def download_rules(self) -> int:
-        downloaded = 0
+    async def update_rules(self) -> int:
+        loaded = 0
         async with aiohttp.ClientSession() as session:
             for url in self.RULE_SOURCES:
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            content = await resp.text()
-                            filename = url.split("/")[-1]
-                            path = self.rules_dir / filename
-                            path.write_text(content, encoding="utf-8")
-                            downloaded += 1
-                            logger.info("⬇️  [SIGMA] İndirildi: %s", filename)
-                except Exception as e:
-                    logger.debug("⚠️ [SIGMA] İndirme hatası %s: %s", url, e)
-        logger.info("✅ [SIGMA] %d kural indirildi.", downloaded)
-        return downloaded
+                    async with session.get(url, timeout=10) as resp:
+                        if resp.status != 200:
+                            continue
+                        text = await resp.text()
+                        filename = url.rsplit("/", 1)[-1]
+                        (self.rules_dir / filename).write_text(text, encoding="utf-8")
+                        loaded += 1
+                except Exception as exc:
+                    logger.debug("Sigma rule download failed url=%s error=%s", url, exc)
+        return loaded
 
 
 class SigmaEngine:
-    """
-    Ana Sigma motoru.
-    """
-
     def __init__(self, alert_callback=None, rules_dir: str = "sigma_rules"):
-        self.rules: List[SigmaRule] = []
-        self.matcher = SigmaMatcher()
-        self.loader = SigmaRuleLoader(rules_dir)
         self.alert_callback = alert_callback
+        self.loader = SigmaRuleLoader(rules_dir=rules_dir)
+        self.matcher = SigmaMatcher()
+        self.rules = self.loader.load_local()
         self._suppress: Dict[str, datetime] = {}
-
-    async def initialize(self):
-        for rule_dict in self.loader.BUILTIN_RULES:
-            rule = self.loader.parser.parse_dict(rule_dict)
-            if rule:
-                self.rules.append(rule)
-        logger.info("📦 [SIGMA] %d yerleşik kural yüklendi.", len(self.rules))
-
-        local = self.loader.load_local()
-        existing_ids = {r.id for r in self.rules}
-        for rule in local:
-            if rule.id not in existing_ids:
-                self.rules.append(rule)
-
-        if not local:
-            logger.info("🌐 [SIGMA] GitHub'dan ek kurallar indiriliyor...")
-            try:
-                await self.loader.download_rules()
-                new_local = self.loader.load_local()
-                for rule in new_local:
-                    if rule.id not in {x.id for x in self.rules}:
-                        self.rules.append(rule)
-            except Exception as e:
-                logger.warning("⚠️ [SIGMA] GitHub indirme başarısız, yerleşik kurallarla devam: %s", e)
-
         logger.info("✅ [SIGMA] Motor hazır. %d kural aktif.", len(self.rules))
 
     async def process_event(self, event: dict) -> list[dict]:
-        """
-        Gelen event'i tüm Sigma kurallarına karşı çalıştır.
-        Dönüş: eşleşen Sigma alert dict listesi
-        """
-        matches: list[dict] = []
+        if is_sigma_generated_event(event):
+            return []
 
+        matches = []
         for rule in self.rules:
             try:
                 if self.matcher.match(event, rule):
-                    alert = await self._emit(event, rule)
+                    alert = await self._build_signal(event, rule)
                     if alert:
                         matches.append(alert)
-            except Exception as e:
-                logger.debug("Kural çalıştırma hatası [%s]: %s", rule.title, e)
-
+            except Exception as exc:
+                logger.debug("Sigma rule execution failed rule=%s error=%s", rule.title, exc)
         return matches
 
-    async def _emit(self, event: dict, rule: SigmaRule) -> dict | None:
-        """Eşleşen kural için alarm üret, suppression uygula."""
-        key = f"{rule.id}:{event.get('hostname', '')}:{event.get('user', '')}"
-        now = datetime.utcnow()
+    async def _build_signal(self, event: dict, rule: SigmaRule) -> Optional[dict]:
+        alert_rule_name = f"SIGMA:{rule.title}"
+        command_line = str(event.get("command_line") or "").strip()
+        details = str(event.get("details") or "").strip()
 
-        last = self._suppress.get(key)
-        if last and (now - last).total_seconds() < 120:
+        if should_suppress_sigma_event(
+            rule_name=alert_rule_name,
+            event_type=event.get("type"),
+            details=details,
+            command_line=command_line,
+        ):
+            logger.info("sigma_suppressed rule=%s host=%s user=%s", alert_rule_name, event.get("hostname"), event.get("user"))
             return None
 
+        key = f"{rule.id}:{event.get('hostname', '')}:{event.get('user', '')}:{alert_rule_name}"
+        now = datetime.utcnow()
+        last = self._suppress.get(key)
+        if last and (now - last).total_seconds() < 180:
+            return None
         self._suppress[key] = now
 
         severity = rule.sol_severity()
-        risk_score = {
-            "CRITICAL": 90,
-            "HIGH": 70,
-            "MEDIUM": 50,
-            "LOW": 30,
-        }.get(severity, 70)
+        risk_score = {"CRITICAL": 90, "HIGH": 70, "MEDIUM": 50, "LOW": 30}.get(severity, 70)
 
-        alert = {
-            "type": "SIGMA_ALERT",
-            "rule": f"SIGMA:{rule.title}",
+        signal = {
+            "type": "SIGMA_SIGNAL",
+            "rule": alert_rule_name,
             "severity": severity,
             "description": f"[Sigma] {rule.title}",
             "hostname": event.get("hostname", "unknown"),
             "user": event.get("user", "unknown"),
-            "details": f"Kural: {rule.title} | {rule.description[:200]}",
+            "details": details,
+            "command_line": command_line,
             "timestamp": now.isoformat() + "Z",
             "mitre": rule.mitre,
-            "risk": {
-                "score": risk_score,
-                "level": severity,
-            },
+            "risk": {"score": risk_score, "level": severity},
             "sigma_id": rule.id,
             "evidence": event,
         }
 
-        logger.warning(
-            "🎯 [SIGMA] Kural eşleşti: %s | %s | %s",
-            rule.title,
-            event.get("hostname"),
-            event.get("user"),
-        )
+        logger.warning("🎯 [SIGMA] Kural eşleşti: %s | %s | %s", rule.title, event.get("hostname"), event.get("user"))
 
-        if self.alert_callback:
-            await self.alert_callback(alert)
+        if ENABLE_RAW_SIGMA_CALLBACKS and self.alert_callback:
+            await self.alert_callback(signal)
 
-        return alert
-
-    async def update_rules(self) -> int:
-        count = await self.loader.download_rules()
-        self.rules = self.loader.load_local()
-        logger.info("🔄 [SIGMA] Kurallar güncellendi. Aktif: %d", len(self.rules))
-        return count
-
-    def add_rule_from_yaml(self, yaml_str: str) -> bool:
-        try:
-            data = yaml.safe_load(yaml_str)
-            rule = self.loader.parser.parse_dict(data)
-            if rule:
-                self.rules.append(rule)
-                logger.info("✅ [SIGMA] Manuel kural eklendi: %s", rule.title)
-                return True
-        except Exception as e:
-            logger.error("❌ [SIGMA] Manuel kural parse hatası: %s", e)
-        return False
-
-    def stats(self) -> dict:
-        by_severity = {}
-        for rule in self.rules:
-            sev = rule.sol_severity()
-            by_severity[sev] = by_severity.get(sev, 0) + 1
-        return {
-            "total": len(self.rules),
-            "by_severity": by_severity,
-            "stable": sum(1 for r in self.rules if r.status == "stable"),
-            "experimental": sum(1 for r in self.rules if r.status == "experimental"),
-        }
+        return signal
 
 
-_sigma_engine: Optional[SigmaEngine] = None
+_engine: Optional[SigmaEngine] = None
 
 
-async def init_sigma(alert_callback, rules_dir: str = "sigma_rules") -> SigmaEngine:
-    global _sigma_engine
-    _sigma_engine = SigmaEngine(alert_callback=alert_callback, rules_dir=rules_dir)
-    await _sigma_engine.initialize()
-    return _sigma_engine
+async def init_sigma(alert_callback=None) -> SigmaEngine:
+    global _engine
+    _engine = SigmaEngine(alert_callback=alert_callback)
+    try:
+        await _engine.loader.update_rules()
+        _engine.rules = _engine.loader.load_local()
+    except Exception as exc:
+        logger.warning("Sigma rule update failed: %s", exc)
+    logger.info("🎯 Sigma init tamam. Aktif kural sayısı=%s", len(_engine.rules))
+    return _engine
 
 
 def get_sigma() -> Optional[SigmaEngine]:
-    return _sigma_engine
+    return _engine

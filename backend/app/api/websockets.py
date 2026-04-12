@@ -4,6 +4,7 @@ app.api.websockets
 WebSocket connection management and broadcast helpers.
 Frontend and agent clients are tracked separately.
 Command lifecycle is persisted into DB.
+Command results are also written into incident timeline when possible.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from app.database.db_manager import (
 logger = logging.getLogger("SolidTrace.WebSocket")
 
 ACTIVE_CONNECTIONS: List[WebSocket] = []
-AGENT_CONNECTIONS: List[WebSocket] = []
+AGENT_CONNECTIONS: Dict[str, WebSocket] = {}
 
 
 def _utcnow_iso() -> str:
@@ -34,9 +35,12 @@ def _utcnow_iso() -> str:
 
 
 def _safe_remove(ws: WebSocket) -> None:
-    for pool in (ACTIVE_CONNECTIONS, AGENT_CONNECTIONS):
-        if ws in pool:
-            pool.remove(ws)
+    if ws in ACTIVE_CONNECTIONS:
+        ACTIVE_CONNECTIONS.remove(ws)
+
+    to_delete = [hostname for hostname, conn in AGENT_CONNECTIONS.items() if conn == ws]
+    for hostname in to_delete:
+        AGENT_CONNECTIONS.pop(hostname, None)
 
 
 async def _send_to_connections(connections: List[WebSocket], payload: str) -> None:
@@ -60,7 +64,7 @@ async def broadcast(msg: Dict[str, Any]) -> None:
     await _send_to_connections(ACTIVE_CONNECTIONS, payload)
 
     if msg.get("type") == "COMMAND":
-        await _send_to_connections(AGENT_CONNECTIONS, payload)
+        await _send_to_connections(list(AGENT_CONNECTIONS.values()), payload)
 
 
 async def _broadcast_command_event(
@@ -85,6 +89,68 @@ async def _broadcast_command_event(
         "data": extra or {},
     }
     await _send_to_connections(ACTIVE_CONNECTIONS, json.dumps(payload, default=str))
+
+
+def _safe_json_loads(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            loaded = json.loads(value)
+            return loaded if isinstance(loaded, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _append_incident_timeline_from_command_row(
+    row: Any,
+    *,
+    event_type: str,
+    actor: str,
+    title: str,
+    details: str,
+) -> None:
+    """
+    CommandExecution row'dan incident_id / tenant_id çıkartıp
+    incident timeline'a event yazar.
+    import'u local yapıyoruz ki circular import oluşmasın.
+    """
+    if not row:
+        return
+
+    payload = _safe_json_loads(getattr(row, "result_payload", None))
+    incident_id = payload.get("incident_id")
+    tenant_id = getattr(row, "tenant_id", None)
+
+    if not incident_id:
+        return
+
+    try:
+        from app.services.incident_service import add_incident_timeline_event
+
+        db = SessionLocal()
+        try:
+            add_incident_timeline_event(
+                db,
+                incident_id=incident_id,
+                tenant_id=tenant_id,
+                event_type=event_type,
+                actor=actor,
+                title=title,
+                details=details,
+            )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning(
+            "incident_timeline_append_failed command_id=%s incident_id=%s error=%s",
+            getattr(row, "command_id", None),
+            incident_id,
+            exc,
+        )
 
 
 def register_command(
@@ -157,12 +223,12 @@ async def broadcast_command(
     }
 
     logger.warning(
-    "### COMMAND SEND DEBUG ### action=%s target=%s command_id=%s agent_count=%s",
-    action,
-    target_hostname,
-    command_id,
-    len(AGENT_CONNECTIONS),
-)
+        "### COMMAND SEND DEBUG ### action=%s target=%s command_id=%s agent_count=%s",
+        action,
+        target_hostname,
+        command_id,
+        len(AGENT_CONNECTIONS),
+    )
 
     await _broadcast_command_event(
         command_id=command_id,
@@ -174,9 +240,43 @@ async def broadcast_command(
         extra=kwargs,
     )
 
-    await _send_to_connections(AGENT_CONNECTIONS, json.dumps(command_msg, default=str))
+    target_ws = AGENT_CONNECTIONS.get(target_hostname)
+    if not target_ws:
+        db = SessionLocal()
+        try:
+            row = update_command_execution(
+                db,
+                command_id,
+                status="failed",
+                success=False,
+                message=f"Target agent not connected: {target_hostname}",
+                finished=True,
+            )
+        finally:
+            db.close()
+
+        _append_incident_timeline_from_command_row(
+            row,
+            event_type="response_result",
+            actor="system",
+            title=f"Command failed: {action}",
+            details=f"target={target_hostname}; status=failed; message=Target agent not connected",
+        )
+
+        await _broadcast_command_event(
+            command_id=command_id,
+            hostname=target_hostname,
+            action=action,
+            status="failed",
+            success=False,
+            message=f"Hedef agent bağlı değil: {target_hostname}",
+            extra=kwargs,
+        )
+        return
+
+    await _send_to_connections([target_ws], json.dumps(command_msg, default=str))
     logger.info("📡 COMMAND sent: %s → %s (%s)", action, target_hostname, command_id)
-    
+
 
 async def websocket_frontend(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -205,7 +305,6 @@ async def websocket_frontend(websocket: WebSocket) -> None:
 
 async def websocket_agent(websocket: WebSocket) -> None:
     await websocket.accept()
-    AGENT_CONNECTIONS.append(websocket)
 
     agent_hostname = "unknown"
     logger.info("🤖 Agent WS bağlandı. Toplam: %s", len(AGENT_CONNECTIONS))
@@ -232,6 +331,8 @@ async def websocket_agent(websocket: WebSocket) -> None:
 
             if msg_type == "ping":
                 agent_hostname = msg.get("hostname", agent_hostname)
+                if agent_hostname and agent_hostname != "unknown":
+                    AGENT_CONNECTIONS[agent_hostname] = websocket
                 await websocket.send_json(
                     {
                         "type": "pong",
@@ -243,6 +344,9 @@ async def websocket_agent(websocket: WebSocket) -> None:
 
             if msg_type == "register":
                 agent_hostname = msg.get("hostname", "unknown")
+                if agent_hostname and agent_hostname != "unknown":
+                    AGENT_CONNECTIONS[agent_hostname] = websocket
+
                 logger.info("🤖 Agent kayıt: %s", agent_hostname)
                 await websocket.send_json(
                     {
@@ -272,6 +376,10 @@ async def websocket_agent(websocket: WebSocket) -> None:
                 status = str(msg.get("status", "received")).strip() or "received"
                 hostname = str(msg.get("hostname", agent_hostname)).strip() or agent_hostname
 
+                if hostname and hostname != "unknown":
+                    AGENT_CONNECTIONS[hostname] = websocket
+
+                row = None
                 if command_id:
                     db = SessionLocal()
                     try:
@@ -287,6 +395,14 @@ async def websocket_agent(websocket: WebSocket) -> None:
                             action = row.action or action
                     finally:
                         db.close()
+
+                _append_incident_timeline_from_command_row(
+                    row,
+                    event_type="response_result",
+                    actor="agent",
+                    title=f"Command acknowledged: {action}",
+                    details=f"target={hostname}; status={status}; success=pending",
+                )
 
                 await _broadcast_command_event(
                     command_id=command_id or f"ack-{hostname}",
@@ -306,6 +422,10 @@ async def websocket_agent(websocket: WebSocket) -> None:
                 success = bool(msg.get("success", False))
                 message = str(msg.get("message", "")).strip() or "Command execution finished"
 
+                if hostname and hostname != "unknown":
+                    AGENT_CONNECTIONS[hostname] = websocket
+
+                row = None
                 if command_id:
                     db = SessionLocal()
                     try:
@@ -323,6 +443,14 @@ async def websocket_agent(websocket: WebSocket) -> None:
                             action = row.action or action
                     finally:
                         db.close()
+
+                _append_incident_timeline_from_command_row(
+                    row,
+                    event_type="response_result",
+                    actor="agent",
+                    title=f"Command result: {action}",
+                    details=f"target={hostname}; status={status}; success={success}; message={message}",
+                )
 
                 await _broadcast_command_event(
                     command_id=command_id or f"result-{hostname}",

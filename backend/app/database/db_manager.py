@@ -11,6 +11,7 @@ Veritabanı katmanı — tek sorumluluk:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -20,6 +21,9 @@ from typing import Any, Optional
 from sqlalchemy import (
     Boolean,
     Column,
+    DateTime,
+    ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -53,6 +57,10 @@ except Exception as exc:
     raise
 
 Base = declarative_base()
+
+
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class TenantModel(Base):
@@ -288,150 +296,347 @@ class CommandExecutionModel(Base):
         return {c.name: getattr(self, c.name) for c in self.__table__.columns}
 
 
+class CaseModel(Base):
+    __tablename__ = "cases"
+
+    id = Column(String, primary_key=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
+
+    title = Column(String, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+
+    status = Column(String, nullable=False, default="open", index=True)
+    severity = Column(String, nullable=False, default="INFO", index=True)
+
+    owner = Column(String, nullable=True, index=True)
+    analyst_note = Column(Text, nullable=True)
+
+    created_at = Column(String, nullable=False, index=True)
+    updated_at = Column(String, nullable=False, index=True)
+    closed_at = Column(String, nullable=True, index=True)
+
+    def to_dict(self) -> dict:
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
+
+class CaseAlertLinkModel(Base):
+    __tablename__ = "case_alert_links"
+
+    id = Column(String, primary_key=True, index=True)
+    case_id = Column(String, ForeignKey("cases.id"), nullable=False, index=True)
+    alert_id = Column(String, ForeignKey("alerts_production_v2.id"), nullable=False, index=True)
+    linked_at = Column(String, nullable=False, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("case_id", "alert_id", name="uq_case_alert_link"),
+        Index("ix_case_alert_links_case_alert", "case_id", "alert_id"),
+    )
+
+    def to_dict(self) -> dict:
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+
+
+class IncidentModel(Base):
+    __tablename__ = "incidents"
+
+    id = Column(String, primary_key=True, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
+
+    campaign_family = Column(String, nullable=False, index=True)
+    username = Column(String, nullable=False, index=True)
+
+    title = Column(String, nullable=False)
+    severity = Column(String, nullable=False, default="INFO")
+    priority = Column(Integer, nullable=False, default=0)
+    status = Column(String, nullable=False, default="open")
+
+    owner = Column(String, nullable=True, index=True)
+    analyst_note = Column(Text, nullable=True)
+
+    playbook = Column(String, nullable=True)
+    recommended_actions_json = Column(Text, nullable=True)
+    attack_story_json = Column(Text, nullable=True, default="[]")  # EKLENDİ/Teyit edildi
+    affected_hosts_json = Column(Text, nullable=True)
+
+    total_events = Column(Integer, nullable=False, default=0)
+    spread_depth = Column(Integer, nullable=False, default=0)
+
+    source_type = Column(String, nullable=False, default="global_campaign")
+    source_key = Column(String, nullable=True, index=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    def recommended_actions(self):
+        try:
+            return json.loads(self.recommended_actions_json or "[]")
+        except Exception:
+            return []
+
+    def affected_hosts(self):
+        try:
+            return json.loads(self.affected_hosts_json or "[]")
+        except Exception:
+            return []
+
+    # EKLENDİ: Helper metod
+    def attack_story(self):
+        try:
+            return json.loads(self.attack_story_json or "[]")
+        except Exception:
+            return []
+
+class IncidentTimelineModel(Base):
+    __tablename__ = "incident_timeline"
+
+    id = Column(String, primary_key=True, index=True)
+    incident_id = Column(String, nullable=False, index=True)
+    tenant_id = Column(String, nullable=True, index=True)
+
+    event_type = Column(String, nullable=False)
+    actor = Column(String, nullable=True)
+
+    title = Column(String, nullable=False)
+    details = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
 def backfill_security_columns() -> None:
-    if not DATABASE_URL.startswith("sqlite"):
-        logger.info("PostgreSQL algılandı; güvenlik kolonları için Alembic migration kullanın.")
-        return
-
-    required_user_columns = {
-        "invite_token_hash": "TEXT",
-        "invite_expires_at": "TEXT",
-        "must_setup_password": "BOOLEAN DEFAULT 0",
-        "password_changed_at": "TEXT",
-        "token_version": "INTEGER DEFAULT 0",
-    }
-
+    # SQLite ve PostgreSQL için hafif migration/backfill
     with engine.begin() as conn:
-        existing = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()}
-        for name, ddl in required_user_columns.items():
-            if name not in existing:
-                conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
-                logger.info("users.%s kolonu eklendi", name)
+        if DATABASE_URL.startswith("sqlite"):
+            required_user_columns = {
+                "invite_token_hash": "TEXT",
+                "invite_expires_at": "TEXT",
+                "must_setup_password": "BOOLEAN DEFAULT 0",
+                "password_changed_at": "TEXT",
+                "token_version": "INTEGER DEFAULT 0",
+            }
 
-        tables = {
-            row[0]
-            for row in conn.exec_driver_sql(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
+            existing = {
+                row[1]
+                for row in conn.exec_driver_sql("PRAGMA table_info(users)").fetchall()
+            }
+            for name, ddl in required_user_columns.items():
+                if name not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+                    logger.info("users.%s kolonu eklendi", name)
 
-        if "agent_nonce_cache" not in tables:
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE agent_nonce_cache (
-                    id TEXT PRIMARY KEY,
-                    agent_id TEXT,
-                    nonce TEXT,
-                    created_at TEXT,
-                    UNIQUE(agent_id, nonce)
+            tables = {
+                row[0]
+                for row in conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+
+            if "agent_nonce_cache" not in tables:
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE agent_nonce_cache (
+                        id TEXT PRIMARY KEY,
+                        agent_id TEXT,
+                        nonce TEXT,
+                        created_at TEXT,
+                        UNIQUE(agent_id, nonce)
+                    )
+                    """
                 )
-                """
-            )
-            logger.info("agent_nonce_cache tablosu oluşturuldu")
+                logger.info("agent_nonce_cache tablosu oluşturuldu")
 
-        if "agents" in tables:
-            agent_existing = {
-                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(agents)").fetchall()
-            }
-            agent_required = {
-                "secret_enc": "TEXT",
-                "revoked_at": "TEXT",
-                "last_seen": "TEXT",
-                "agent_version": "TEXT",
-                "os_name": "TEXT",
-                "secret_rotated_at": "TEXT",
-                "secret_version": "INTEGER DEFAULT 1",
-                "last_ip": "TEXT",
-                "last_user": "TEXT",
-            }
-            for name, ddl in agent_required.items():
-                if name not in agent_existing:
-                    conn.exec_driver_sql(f"ALTER TABLE agents ADD COLUMN {name} {ddl}")
-                    logger.info("agents.%s kolonu eklendi", name)
+            if "agents" in tables:
+                agent_existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql("PRAGMA table_info(agents)").fetchall()
+                }
+                agent_required = {
+                    "secret_enc": "TEXT",
+                    "revoked_at": "TEXT",
+                    "last_seen": "TEXT",
+                    "agent_version": "TEXT",
+                    "os_name": "TEXT",
+                    "secret_rotated_at": "TEXT",
+                    "secret_version": "INTEGER DEFAULT 1",
+                    "last_ip": "TEXT",
+                    "last_user": "TEXT",
+                }
+                for name, ddl in agent_required.items():
+                    if name not in agent_existing:
+                        conn.exec_driver_sql(f"ALTER TABLE agents ADD COLUMN {name} {ddl}")
+                        logger.info("agents.%s kolonu eklendi", name)
 
-        if "alerts_production_v2" in tables:
-            alert_existing = {
-                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(alerts_production_v2)").fetchall()
-            }
-            alert_required = {
-                "status": "TEXT DEFAULT 'open'",
-                "analyst_note": "TEXT",
-                "resolved_at": "TEXT",
-                "resolved_by": "TEXT",
-                "assigned_to": "TEXT",
-                "assigned_at": "TEXT",
-            }
-            for name, ddl in alert_required.items():
-                if name not in alert_existing:
-                    conn.exec_driver_sql(f"ALTER TABLE alerts_production_v2 ADD COLUMN {name} {ddl}")
-                    logger.info("alerts_production_v2.%s kolonu eklendi", name)
+            if "alerts_production_v2" in tables:
+                alert_existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql("PRAGMA table_info(alerts_production_v2)").fetchall()
+                }
+                alert_required = {
+                    "status": "TEXT DEFAULT 'open'",
+                    "analyst_note": "TEXT",
+                    "resolved_at": "TEXT",
+                    "resolved_by": "TEXT",
+                    "assigned_to": "TEXT",
+                    "assigned_at": "TEXT",
+                }
+                for name, ddl in alert_required.items():
+                    if name not in alert_existing:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE alerts_production_v2 ADD COLUMN {name} {ddl}"
+                        )
+                        logger.info("alerts_production_v2.%s kolonu eklendi", name)
 
-        if "command_executions" in tables:
-            cmd_existing = {
-                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(command_executions)").fetchall()
-            }
-            cmd_required = {
-                "command_id": "TEXT",
-                "action": "TEXT",
-                "target_hostname": "TEXT",
-                "requested_by": "TEXT",
-                "tenant_id": "TEXT",
-                "status": "TEXT DEFAULT 'queued'",
-                "success": "BOOLEAN",
-                "message": "TEXT",
-                "created_at": "TEXT",
-                "updated_at": "TEXT",
-                "acknowledged_at": "TEXT",
-                "finished_at": "TEXT",
-                "agent_hostname": "TEXT",
-                "result_payload": "TEXT",
-            }
-            for name, ddl in cmd_required.items():
-                if name not in cmd_existing:
-                    conn.exec_driver_sql(f"ALTER TABLE command_executions ADD COLUMN {name} {ddl}")
-                    logger.info("command_executions.%s kolonu eklendi", name)
+            if "command_executions" in tables:
+                cmd_existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql("PRAGMA table_info(command_executions)").fetchall()
+                }
+                cmd_required = {
+                    "command_id": "TEXT",
+                    "action": "TEXT",
+                    "target_hostname": "TEXT",
+                    "requested_by": "TEXT",
+                    "tenant_id": "TEXT",
+                    "status": "TEXT DEFAULT 'queued'",
+                    "success": "BOOLEAN",
+                    "message": "TEXT",
+                    "created_at": "TEXT",
+                    "updated_at": "TEXT",
+                    "acknowledged_at": "TEXT",
+                    "finished_at": "TEXT",
+                    "agent_hostname": "TEXT",
+                    "result_payload": "TEXT",
+                }
+
+                for name, ddl in cmd_required.items():
+                    if name not in cmd_existing:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE command_executions ADD COLUMN {name} {ddl}"
+                        )
+                        logger.info("command_executions.%s kolonu eklendi", name)
+            else:
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE command_executions (
+                        id TEXT PRIMARY KEY,
+                        command_id TEXT UNIQUE,
+                        action TEXT,
+                        target_hostname TEXT,
+                        requested_by TEXT,
+                        tenant_id TEXT,
+                        status TEXT DEFAULT 'queued',
+                        success BOOLEAN,
+                        message TEXT,
+                        created_at TEXT,
+                        updated_at TEXT,
+                        acknowledged_at TEXT,
+                        finished_at TEXT,
+                        agent_hostname TEXT,
+                        result_payload TEXT
+                    )
+                    """
+                )
+                conn.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ix_command_executions_command_id ON command_executions(command_id)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_command_executions_status ON command_executions(status)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_command_executions_target_hostname ON command_executions(target_hostname)"
+                )
+                logger.info("command_executions tablosu oluşturuldu")
+
+            if "incidents" in tables:
+                incident_existing = {
+                    row[1]
+                    for row in conn.exec_driver_sql("PRAGMA table_info(incidents)").fetchall()
+                }
+                if "attack_story_json" not in incident_existing:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE incidents ADD COLUMN attack_story_json TEXT DEFAULT '[]'"
+                    )
+                    logger.info("incidents.attack_story_json kolonu eklendi")
+
+            if "cases" not in tables:
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE cases (
+                        id TEXT PRIMARY KEY,
+                        tenant_id TEXT,
+                        title TEXT NOT NULL,
+                        description TEXT,
+                        status TEXT NOT NULL DEFAULT 'open',
+                        severity TEXT NOT NULL DEFAULT 'INFO',
+                        owner TEXT,
+                        analyst_note TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        closed_at TEXT
+                    )
+                    """
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_cases_tenant_id ON cases(tenant_id)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_cases_status ON cases(status)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_cases_severity ON cases(severity)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_cases_created_at ON cases(created_at)"
+                )
+                logger.info("cases tablosu oluşturuldu")
+
+            if "case_alert_links" not in tables:
+                conn.exec_driver_sql(
+                    """
+                    CREATE TABLE case_alert_links (
+                        id TEXT PRIMARY KEY,
+                        case_id TEXT NOT NULL,
+                        alert_id TEXT NOT NULL,
+                        linked_at TEXT NOT NULL,
+                        UNIQUE(case_id, alert_id)
+                    )
+                    """
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_case_alert_links_case_id ON case_alert_links(case_id)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_case_alert_links_alert_id ON case_alert_links(alert_id)"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX IF NOT EXISTS ix_case_alert_links_linked_at ON case_alert_links(linked_at)"
+                )
+                logger.info("case_alert_links tablosu oluşturuldu")
+
         else:
-            conn.exec_driver_sql(
-                """
-                CREATE TABLE command_executions (
-                    id TEXT PRIMARY KEY,
-                    command_id TEXT UNIQUE,
-                    action TEXT,
-                    target_hostname TEXT,
-                    requested_by TEXT,
-                    tenant_id TEXT,
-                    status TEXT DEFAULT 'queued',
-                    success BOOLEAN,
-                    message TEXT,
-                    created_at TEXT,
-                    updated_at TEXT,
-                    acknowledged_at TEXT,
-                    finished_at TEXT,
-                    agent_hostname TEXT,
-                    result_payload TEXT
+            logger.info("PostgreSQL algılandı; hafif backfill kontrolü başlatılıyor.")
+
+            # incidents.attack_story_json
+            incident_cols = {
+                row[0]
+                for row in conn.exec_driver_sql(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'incidents'
+                    """
+                ).fetchall()
+            }
+            if "attack_story_json" not in incident_cols:
+                conn.exec_driver_sql(
+                    "ALTER TABLE incidents ADD COLUMN attack_story_json TEXT DEFAULT '[]'"
                 )
-                """
-            )
-            conn.exec_driver_sql(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ix_command_executions_command_id ON command_executions(command_id)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_command_executions_status ON command_executions(status)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_command_executions_target_hostname ON command_executions(target_hostname)"
-            )
-            logger.info("command_executions tablosu oluşturuldu")
+                logger.info("PostgreSQL: incidents.attack_story_json kolonu eklendi")
 
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     backfill_security_columns()
     logger.info("✅ Tablolar hazır.")
-
-
-def utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def create_command_execution(
@@ -499,7 +704,6 @@ def update_command_execution(
     if not row:
         return None
 
-    # idempotency: final state'e ulaşmış komutu tekrar bozma
     if row.status in {"completed", "failed", "expired"}:
         return row
 
@@ -528,6 +732,7 @@ def update_command_execution(
     db.refresh(row)
     return row
 
+
 def expire_stale_commands(db: Session, older_than_seconds: int = 120) -> int:
     now = datetime.now(timezone.utc)
     rows = db.query(CommandExecutionModel).filter(
@@ -555,6 +760,7 @@ def expire_stale_commands(db: Session, older_than_seconds: int = 120) -> int:
         db.commit()
 
     return updated
+
 
 async def write_audit(
     db: Session,
