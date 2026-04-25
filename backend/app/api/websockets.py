@@ -13,7 +13,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket
 
@@ -32,6 +32,10 @@ AGENT_CONNECTIONS: Dict[str, WebSocket] = {}
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _effective_tenant_id(tenant_id: Optional[str]) -> str:
+    return (tenant_id or "").strip() or "default_tenant"
 
 
 def _safe_remove(ws: WebSocket) -> None:
@@ -162,11 +166,14 @@ def register_command(
     tenant_id: str | None = None,
     extra: Dict[str, Any] | None = None,
 ) -> None:
+    tenant_id = _effective_tenant_id(tenant_id)
+
     logger.warning(
-        "### REGISTER_COMMAND HIT ### command_id=%s action=%s target=%s",
+        "### REGISTER_COMMAND HIT ### command_id=%s action=%s target=%s tenant=%s",
         command_id,
         action,
         target_hostname,
+        tenant_id,
     )
 
     db = SessionLocal()
@@ -182,7 +189,11 @@ def register_command(
             message="Command queued",
             result_payload=json.dumps(extra or {}, default=str),
         )
-        logger.warning("### COMMAND DB INSERT DONE ### command_id=%s", command_id)
+        logger.warning(
+            "### COMMAND DB INSERT DONE ### command_id=%s tenant=%s",
+            command_id,
+            tenant_id,
+        )
     finally:
         db.close()
 
@@ -205,6 +216,8 @@ async def broadcast_command(
     tenant_id: str | None = None,
     **kwargs,
 ) -> None:
+    tenant_id = _effective_tenant_id(tenant_id)
+
     register_command(
         command_id=command_id,
         action=action,
@@ -215,18 +228,20 @@ async def broadcast_command(
     )
 
     command_msg = {
-        "type": "COMMAND",
-        "command_id": command_id,
-        "action": action,
-        "target_hostname": target_hostname,
-        **kwargs,
-    }
+    "type": "COMMAND",
+    "command_id": command_id,
+    "action": action,
+    "target_hostname": target_hostname,
+    "tenant_id": tenant_id,
+    **kwargs,
+}
 
     logger.warning(
-        "### COMMAND SEND DEBUG ### action=%s target=%s command_id=%s agent_count=%s",
+        "### COMMAND SEND DEBUG ### action=%s target=%s command_id=%s tenant=%s agent_count=%s",
         action,
         target_hostname,
         command_id,
+        tenant_id,
         len(AGENT_CONNECTIONS),
     )
 
@@ -237,7 +252,7 @@ async def broadcast_command(
         status="queued",
         success=None,
         message=f"Komut kuyruğa alındı: {action}",
-        extra=kwargs,
+        extra={**kwargs, "tenant_id": tenant_id},
     )
 
     target_ws = AGENT_CONNECTIONS.get(target_hostname)
@@ -270,7 +285,7 @@ async def broadcast_command(
             status="failed",
             success=False,
             message=f"Hedef agent bağlı değil: {target_hostname}",
-            extra=kwargs,
+            extra={**kwargs, "tenant_id": tenant_id},
         )
         return
 

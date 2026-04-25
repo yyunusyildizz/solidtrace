@@ -147,78 +147,111 @@ impl ApiClient {
         ApiClient { hostname: host, tx }
     }
 
-    fn verify_signed_command(&self, cmd: &CommandMessage) -> Result<(), String> {
-        let cfg = AgentConfig::get();
+fn verify_signed_command(&self, cmd: &CommandMessage) -> Result<(), String> {
+    let cfg = AgentConfig::get();
 
-        if cfg.command_verify_key.trim().is_empty() {
-            return Err("agent command public key yapılandırılmamış".to_string());
-        }
+    let command_id = cmd
+        .command_id
+        .as_deref()
+        .ok_or_else(|| "command_id eksik".to_string())?;
 
-        let version = cmd.version.unwrap_or(1);
+    let action = cmd
+        .action
+        .as_deref()
+        .ok_or_else(|| "action eksik".to_string())?;
 
-        let command_id = cmd
-            .command_id
-            .as_deref()
-            .ok_or_else(|| "command_id eksik".to_string())?;
+    let target_hostname = cmd
+        .target_hostname
+        .as_deref()
+        .ok_or_else(|| "target_hostname eksik".to_string())?;
 
-        let action = cmd
-            .action
-            .as_deref()
-            .ok_or_else(|| "action eksik".to_string())?;
-
-        let target_hostname = cmd
-            .target_hostname
-            .as_deref()
-            .ok_or_else(|| "target_hostname eksik".to_string())?;
-
-        let tenant_id = cmd
-            .tenant_id
-            .as_deref()
-            .ok_or_else(|| "tenant_id eksik".to_string())?;
-
-        let issued_at = cmd
-            .issued_at
-            .as_deref()
-            .ok_or_else(|| "issued_at eksik".to_string())?;
-
-        let expires_at = cmd
-            .expires_at
-            .as_deref()
-            .ok_or_else(|| "expires_at eksik".to_string())?;
-
-        let nonce = cmd
-            .nonce
-            .as_deref()
-            .ok_or_else(|| "nonce eksik".to_string())?;
-
-        let signature = cmd
-            .signature
-            .as_deref()
-            .ok_or_else(|| "signature eksik".to_string())?;
-
-        if !self.is_command_for_me(Some(target_hostname)) {
-            return Err("command target bu agent değil".to_string());
-        }
-
-        validate_timestamps(issued_at, expires_at)?;
-
-        let message = build_command_signing_message(
-            version,
-            command_id,
-            action,
-            target_hostname,
-            tenant_id,
-            issued_at,
-            expires_at,
-            nonce,
-            &cmd.args,
-        );
-
-        verify_command_signature(&cfg.command_verify_key, &message, signature)?;
-        check_and_store_nonce(command_id, nonce)?;
-
-        Ok(())
+    if !self.is_command_for_me(Some(target_hostname)) {
+        return Err("command target bu agent değil".to_string());
     }
+
+    let allow_unsigned = std::env::var("SOLIDTRACE_ALLOW_UNSIGNED_COMMANDS")
+        .unwrap_or_else(|_| "true".to_string())
+        .to_lowercase()
+        != "false";
+
+    let has_signed_fields = cmd.tenant_id.as_deref().is_some_and(|v| !v.trim().is_empty())
+        && cmd.issued_at.as_deref().is_some_and(|v| !v.trim().is_empty())
+        && cmd.expires_at.as_deref().is_some_and(|v| !v.trim().is_empty())
+        && cmd.nonce.as_deref().is_some_and(|v| !v.trim().is_empty())
+        && cmd.signature.as_deref().is_some_and(|v| !v.trim().is_empty());
+
+    if !has_signed_fields {
+        if allow_unsigned {
+            println!(
+                "⚠️ [COMMAND] Unsigned dev command kabul edildi: action={} command_id={}",
+                action, command_id
+            );
+            return Ok(());
+        }
+
+        return Err(
+            "signed command alanları eksik ve SOLIDTRACE_ALLOW_UNSIGNED_COMMANDS=false".to_string(),
+        );
+    }
+
+    if cfg.command_verify_key.trim().is_empty() {
+        if allow_unsigned {
+            println!(
+                "⚠️ [COMMAND] Signature alanları var ama public key yok; dev modda kabul edildi: action={} command_id={}",
+                action, command_id
+            );
+            return Ok(());
+        }
+
+        return Err("agent command public key yapılandırılmamış".to_string());
+    }
+
+    let version = cmd.version.unwrap_or(1);
+
+    let tenant_id = cmd
+        .tenant_id
+        .as_deref()
+        .ok_or_else(|| "tenant_id eksik".to_string())?;
+
+    let issued_at = cmd
+        .issued_at
+        .as_deref()
+        .ok_or_else(|| "issued_at eksik".to_string())?;
+
+    let expires_at = cmd
+        .expires_at
+        .as_deref()
+        .ok_or_else(|| "expires_at eksik".to_string())?;
+
+    let nonce = cmd
+        .nonce
+        .as_deref()
+        .ok_or_else(|| "nonce eksik".to_string())?;
+
+    let signature = cmd
+        .signature
+        .as_deref()
+        .ok_or_else(|| "signature eksik".to_string())?;
+
+    validate_timestamps(issued_at, expires_at)?;
+
+    let message = build_command_signing_message(
+        version,
+        command_id,
+        action,
+        target_hostname,
+        tenant_id,
+        issued_at,
+        expires_at,
+        nonce,
+        &cmd.args,
+    );
+
+    verify_command_signature(&cfg.command_verify_key, &message, signature)?;
+    check_and_store_nonce(command_id, nonce)?;
+
+    Ok(())
+}
 
     pub async fn send_event(
         &self,

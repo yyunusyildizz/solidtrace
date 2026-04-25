@@ -3,9 +3,11 @@
 import AuthGuard from "@/components/auth/AuthGuard";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { HostRecentAlerts } from "@/components/soc/host-recent-alerts";
 import { HostLastResponseActions } from "@/components/soc/host-last-response-actions";
 import {
   Activity,
+  AlertTriangle,
   ChevronDown,
   ChevronUp,
   Monitor,
@@ -306,7 +308,7 @@ function AssetsPage() {
   }
 
   return (
-    <div className="grid gap-6">
+    <div className="grid gap-6 overflow-x-hidden">
       <div>
         <div
           className="text-[11px] font-bold uppercase tracking-[0.24em]"
@@ -568,6 +570,20 @@ function AssetsPage() {
                           </div>
                           <HostLastResponseActions hostname={asset.hostname} />
                         </div>
+                      </div>
+
+                      <div
+                        className="border-t pt-4"
+                        style={{ borderColor: "var(--border)" }}
+                      >
+                        <div
+                          className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.2em]"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          <AlertTriangle size={13} />
+                          Recent Alerts
+                        </div>
+                        <HostRecentAlerts hostname={asset.hostname} />
                       </div>
 
                       <div

@@ -5,7 +5,7 @@ Agent komutları ve event ingest endpoint'leri
 """
 
 from __future__ import annotations
-from app.api.dev_auth_bypass_patch import resolve_agent_tenant_id
+
 import asyncio
 import hashlib
 import logging
@@ -61,7 +61,9 @@ def set_engines(correlator, sigma, ueba, cef):
     _ueba_engine = ueba
     _cef_output = cef
     if _event_processor is None:
-        _event_processor = EventProcessor(MIN_ALERT_SCORE, correlator=correlator, sigma_engine=sigma)
+        _event_processor = EventProcessor(
+            MIN_ALERT_SCORE, correlator=correlator, sigma_engine=sigma
+        )
     else:
         _event_processor.set_engines(correlator=correlator, sigma_engine=sigma)
 
@@ -69,7 +71,9 @@ def set_engines(correlator, sigma, ueba, cef):
 def _get_event_processor() -> EventProcessor:
     global _event_processor
     if _event_processor is None:
-        _event_processor = EventProcessor(MIN_ALERT_SCORE, correlator=_correlator, sigma_engine=_sigma_engine)
+        _event_processor = EventProcessor(
+            MIN_ALERT_SCORE, correlator=_correlator, sigma_engine=_sigma_engine
+        )
     return _event_processor
 
 
@@ -110,6 +114,21 @@ def _safe_action_request_dict(req: ActionRequest) -> Dict[str, Any]:
     if hasattr(req, "model_dump"):
         return req.model_dump()
     return req.dict()
+
+
+def _effective_tenant_id(
+    tenant_id: Optional[str],
+    request: Optional[Request] = None,
+) -> str:
+    resolved = tenant_id
+
+    if not resolved and request is not None:
+        resolved = getattr(request.state, "tenant_id", None)
+
+    if not resolved:
+        resolved = "default_tenant"
+
+    return resolved
 
 
 def _cleanup_event_dedup_cache() -> None:
@@ -159,7 +178,9 @@ def _normalize_event(event: EventBase) -> Dict[str, Any]:
         "details": _to_str(event.details, MAX_DETAILS_LEN),
         "command_line": _to_str(event.command_line, MAX_CMD_LEN),
         "serial": _to_str(event.serial, MAX_SERIAL_LEN),
-        "severity": _to_str(event.severity or "INFO", MAX_SEVERITY_LEN, default="INFO").upper(),
+        "severity": _to_str(
+            event.severity or "INFO", MAX_SEVERITY_LEN, default="INFO"
+        ).upper(),
         "timestamp": event.timestamp,
     }
 
@@ -173,7 +194,11 @@ def _normalize_runtime_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
         "details": _to_str(event_data.get("details"), MAX_DETAILS_LEN),
         "command_line": _to_str(event_data.get("command_line"), MAX_CMD_LEN),
         "serial": _to_str(event_data.get("serial"), MAX_SERIAL_LEN),
-        "severity": _to_str(event_data.get("severity") or "INFO", MAX_SEVERITY_LEN, default="INFO").upper(),
+        "severity": _to_str(
+            event_data.get("severity") or "INFO",
+            MAX_SEVERITY_LEN,
+            default="INFO",
+        ).upper(),
         "timestamp": event_data.get("timestamp"),
     }
 
@@ -192,10 +217,23 @@ def _validated_pid(pid: Any) -> int:
     return pid_value
 
 
-async def _write_action_audit(current_user: str, action: str, target: str, detail: str = "", tenant_id: Optional[str] = None) -> None:
+async def _write_action_audit(
+    current_user: str,
+    action: str,
+    target: str,
+    detail: str = "",
+    tenant_id: Optional[str] = None,
+) -> None:
     db = SessionLocal()
     try:
-        await write_audit(db, current_user, action, target=target, detail=_to_str(detail, 1000), tenant_id=tenant_id)
+        await write_audit(
+            db,
+            current_user,
+            action,
+            target=target,
+            detail=_to_str(detail, 1000),
+            tenant_id=tenant_id,
+        )
     finally:
         db.close()
 
@@ -242,7 +280,10 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
         try:
             corr_event = {
                 **event_data,
-                "risk": {"score": int(event_data.get("risk_score") or 0), "level": event_data.get("severity") or "INFO"},
+                "risk": {
+                    "score": int(event_data.get("risk_score") or 0),
+                    "level": event_data.get("severity") or "INFO",
+                },
                 "tenant_id": tenant_id,
             }
             asyncio.create_task(_ueba_engine.process_event(corr_event))
@@ -251,7 +292,9 @@ async def process_single_event(event_data: dict, tenant_id: Optional[str] = None
 
     if _cef_output:
         try:
-            _cef_output.send({**event_data, "timestamp": event_data.get("timestamp") or _now_iso()})
+            _cef_output.send(
+                {**event_data, "timestamp": event_data.get("timestamp") or _now_iso()}
+            )
         except Exception as exc:
             logger.warning("cef_send_failed tenant=%s error=%s", tenant_id, exc)
 
@@ -269,109 +312,332 @@ async def report_hash(
 
 
 @router.post("/api/actions/analyze")
-async def analyze_host(req: ActionRequest, bg: BackgroundTasks, request: Request, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def analyze_host(
+    req: ActionRequest,
+    bg: BackgroundTasks,
+    request: Request,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(req.hostname)
     command_id = _new_command_id("ANALYZE_HOST", hostname)
 
-    await broadcast_command("ANALYZE_HOST", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id, rule=_to_str(req.rule, 255))
+    await broadcast_command(
+        "ANALYZE_HOST",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+        rule=_to_str(req.rule, 255),
+    )
 
-    logger.info("action_analyze_host request_id=%s tenant=%s host=%s user=%s rule=%s command_id=%s", _get_request_id(request), tenant_id, hostname, current_user, _to_str(req.rule, 255), command_id)
+    logger.info(
+        "action_analyze_host request_id=%s tenant=%s host=%s user=%s rule=%s command_id=%s",
+        _get_request_id(request),
+        tenant_id,
+        hostname,
+        current_user,
+        _to_str(req.rule, 255),
+        command_id,
+    )
 
     bg.add_task(perform_groq_analysis, _safe_action_request_dict(req), broadcast)
-    await _write_action_audit(current_user=current_user, action="ANALYZE_HOST", target=hostname, detail=req.rule or "", tenant_id=tenant_id)
-    return {"status": "sent", "action": "ANALYZE_HOST", "command_id": command_id, "message": "AI analizi ve agent komutu başlatıldı"}
+    await _write_action_audit(
+        current_user=current_user,
+        action="ANALYZE_HOST",
+        target=hostname,
+        detail=req.rule or "",
+        tenant_id=tenant_id,
+    )
+    return {
+        "status": "sent",
+        "action": "ANALYZE_HOST",
+        "command_id": command_id,
+        "message": "AI analizi ve agent komutu başlatıldı",
+    }
 
 
 @router.post("/api/actions/kill")
-async def kill_process(req: ActionRequest, request: Request, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def kill_process(
+    req: ActionRequest,
+    request: Request,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(req.hostname)
     pid = _validated_pid(req.pid)
     command_id = _new_command_id("KILL_PROCESS", hostname)
-    await broadcast_command("KILL_PROCESS", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id, target_pid=pid)
-    logger.warning("action_kill_process request_id=%s tenant=%s host=%s pid=%s user=%s command_id=%s", _get_request_id(request), tenant_id, hostname, pid, current_user, command_id)
-    await _write_action_audit(current_user=current_user, action="KILL_PROCESS", target=f"{hostname}:PID{pid}", detail=req.rule or "", tenant_id=tenant_id)
+
+    await broadcast_command(
+        "KILL_PROCESS",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+        target_pid=pid,
+    )
+
+    logger.warning(
+        "action_kill_process request_id=%s tenant=%s host=%s pid=%s user=%s command_id=%s",
+        _get_request_id(request),
+        tenant_id,
+        hostname,
+        pid,
+        current_user,
+        command_id,
+    )
+
+    await _write_action_audit(
+        current_user=current_user,
+        action="KILL_PROCESS",
+        target=f"{hostname}:PID{pid}",
+        detail=req.rule or "",
+        tenant_id=tenant_id,
+    )
     return {"status": "sent", "action": "KILL_PROCESS", "command_id": command_id}
 
 
 @router.post("/api/actions/isolate")
-async def isolate_host(req: ActionRequest, request: Request, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def isolate_host(
+    req: ActionRequest,
+    request: Request,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(req.hostname)
+
+    logger.warning(
+        "DEBUG isolate effective tenant_id=%s user=%s host=%s",
+        tenant_id,
+        current_user,
+        hostname,
+    )
+
     command_id = _new_command_id("ISOLATE_HOST", hostname)
-    await broadcast_command("ISOLATE_HOST", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id)
-    logger.warning("action_isolate_host request_id=%s tenant=%s host=%s user=%s command_id=%s", _get_request_id(request), tenant_id, hostname, current_user, command_id)
-    await _write_action_audit(current_user=current_user, action="ISOLATE_HOST", target=hostname, detail=req.rule or "", tenant_id=tenant_id)
+
+    await broadcast_command(
+        "ISOLATE_HOST",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
+    logger.warning(
+        "action_isolate_host request_id=%s tenant=%s host=%s user=%s command_id=%s",
+        _get_request_id(request),
+        tenant_id,
+        hostname,
+        current_user,
+        command_id,
+    )
+
+    await _write_action_audit(
+        current_user=current_user,
+        action="ISOLATE_HOST",
+        target=hostname,
+        detail=req.rule or "",
+        tenant_id=tenant_id,
+    )
     return {"status": "sent", "action": "ISOLATE_HOST", "command_id": command_id}
 
 
 @router.post("/api/actions/unisolate")
-async def unisolate_host(req: ActionRequest, request: Request, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def unisolate_host(
+    req: ActionRequest,
+    request: Request,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(req.hostname)
     command_id = _new_command_id("UNISOLATE_HOST", hostname)
-    await broadcast_command("UNISOLATE_HOST", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id)
-    logger.warning("action_unisolate_host request_id=%s tenant=%s host=%s user=%s command_id=%s", _get_request_id(request), tenant_id, hostname, current_user, command_id)
-    await _write_action_audit(current_user=current_user, action="UNISOLATE_HOST", target=hostname, detail=req.rule or "", tenant_id=tenant_id)
+
+    await broadcast_command(
+        "UNISOLATE_HOST",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
+    logger.warning(
+        "action_unisolate_host request_id=%s tenant=%s host=%s user=%s command_id=%s",
+        _get_request_id(request),
+        tenant_id,
+        hostname,
+        current_user,
+        command_id,
+    )
+
+    await _write_action_audit(
+        current_user=current_user,
+        action="UNISOLATE_HOST",
+        target=hostname,
+        detail=req.rule or "",
+        tenant_id=tenant_id,
+    )
     return {"status": "sent", "action": "UNISOLATE_HOST", "command_id": command_id}
 
 
 @router.post("/api/actions/usb_disable")
-async def usb_disable(req: ActionRequest, request: Request, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def usb_disable(
+    req: ActionRequest,
+    request: Request,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(req.hostname)
     command_id = _new_command_id("USB_DISABLE", hostname)
-    await broadcast_command("USB_DISABLE", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id)
-    logger.warning("action_usb_disable request_id=%s tenant=%s host=%s user=%s command_id=%s", _get_request_id(request), tenant_id, hostname, current_user, command_id)
-    await _write_action_audit(current_user=current_user, action="USB_DISABLE", target=hostname, detail=req.rule or "", tenant_id=tenant_id)
+
+    await broadcast_command(
+        "USB_DISABLE",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
+    logger.warning(
+        "action_usb_disable request_id=%s tenant=%s host=%s user=%s command_id=%s",
+        _get_request_id(request),
+        tenant_id,
+        hostname,
+        current_user,
+        command_id,
+    )
+
+    await _write_action_audit(
+        current_user=current_user,
+        action="USB_DISABLE",
+        target=hostname,
+        detail=req.rule or "",
+        tenant_id=tenant_id,
+    )
     return {"status": "sent", "action": "USB_DISABLE", "command_id": command_id}
 
 
 @router.post("/api/actions/usb_enable")
-async def usb_enable(req: ActionRequest, request: Request, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def usb_enable(
+    req: ActionRequest,
+    request: Request,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(req.hostname)
     command_id = _new_command_id("USB_ENABLE", hostname)
-    await broadcast_command("USB_ENABLE", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id)
-    logger.warning("action_usb_enable request_id=%s tenant=%s host=%s user=%s command_id=%s", _get_request_id(request), tenant_id, hostname, current_user, command_id)
-    await _write_action_audit(current_user=current_user, action="USB_ENABLE", target=hostname, detail=req.rule or "", tenant_id=tenant_id)
+
+    await broadcast_command(
+        "USB_ENABLE",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
+
+    logger.warning(
+        "action_usb_enable request_id=%s tenant=%s host=%s user=%s command_id=%s",
+        _get_request_id(request),
+        tenant_id,
+        hostname,
+        current_user,
+        command_id,
+    )
+
+    await _write_action_audit(
+        current_user=current_user,
+        action="USB_ENABLE",
+        target=hostname,
+        detail=req.rule or "",
+        tenant_id=tenant_id,
+    )
     return {"status": "sent", "action": "USB_ENABLE", "command_id": command_id}
 
 
 @router.get("/api/v1/processes/{hostname}")
-async def get_processes(hostname: str, request: Request, current_user: str = Depends(require_role("admin")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def get_processes(
+    hostname: str,
+    request: Request,
+    current_user: str = Depends(require_role("admin")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
     hostname = _validated_hostname(hostname)
 
-    local_names = {socket.gethostname().lower(), socket.gethostname().upper(), "localhost", "127.0.0.1"}
+    local_names = {
+        socket.gethostname().lower(),
+        socket.gethostname().upper(),
+        "localhost",
+        "127.0.0.1",
+    }
 
     if hostname.lower() in local_names or hostname.upper() in local_names:
         if not ALLOW_LOCAL_PROCESS_ENUM:
-            raise HTTPException(status_code=403, detail="Local process enumeration devre dışı")
+            raise HTTPException(
+                status_code=403, detail="Local process enumeration devre dışı"
+            )
 
         import psutil
 
         processes = []
-        for proc in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info", "status", "username", "cmdline"]):
+        for proc in psutil.process_iter(
+            ["pid", "name", "cpu_percent", "memory_info", "status", "username", "cmdline"]
+        ):
             try:
                 info = proc.info
-                processes.append({
-                    "pid": info["pid"],
-                    "name": (info.get("name") or "?")[:128],
-                    "cpu": round(info.get("cpu_percent") or 0.0, 2),
-                    "memory": round((info["memory_info"].rss if info["memory_info"] else 0) / 1024 / 1024, 1),
-                    "status": (info.get("status") or "running")[:64],
-                    "user": (info.get("username") or "SYSTEM")[:128],
-                    "cmdline": " ".join((info.get("cmdline") or [])[:4])[:200],
-                })
+                processes.append(
+                    {
+                        "pid": info["pid"],
+                        "name": (info.get("name") or "?")[:128],
+                        "cpu": round(info.get("cpu_percent") or 0.0, 2),
+                        "memory": round(
+                            (info["memory_info"].rss if info["memory_info"] else 0)
+                            / 1024
+                            / 1024,
+                            1,
+                        ),
+                        "status": (info.get("status") or "running")[:64],
+                        "user": (info.get("username") or "SYSTEM")[:128],
+                        "cmdline": " ".join((info.get("cmdline") or [])[:4])[:200],
+                    }
+                )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
         processes.sort(key=lambda item: item["cpu"], reverse=True)
-        logger.info("process_list_requested request_id=%s tenant=%s host=%s user=%s source=%s process_count=%s", _get_request_id(request), tenant_id, hostname, current_user, "local", len(processes[:200]))
+        logger.info(
+            "process_list_requested request_id=%s tenant=%s host=%s user=%s source=%s process_count=%s",
+            _get_request_id(request),
+            tenant_id,
+            hostname,
+            current_user,
+            "local",
+            len(processes[:200]),
+        )
         return {"hostname": hostname, "source": "local", "processes": processes[:200]}
 
     command_id = _new_command_id("SCAN_PROCESSES", hostname)
-    await broadcast_command("SCAN_PROCESSES", hostname, command_id=command_id, requested_by=current_user, tenant_id=tenant_id)
+    await broadcast_command(
+        "SCAN_PROCESSES",
+        hostname,
+        command_id=command_id,
+        requested_by=current_user,
+        tenant_id=tenant_id,
+    )
 
     db = SessionLocal()
     try:
         cutoff = (_utcnow() - timedelta(seconds=120)).isoformat()
-        query = db.query(AlertModel).filter(AlertModel.hostname == hostname, AlertModel.type == "PROCESS_CREATED", AlertModel.created_at >= cutoff)
+        query = db.query(AlertModel).filter(
+            AlertModel.hostname == hostname,
+            AlertModel.type == "PROCESS_CREATED",
+            AlertModel.created_at >= cutoff,
+        )
         if tenant_id and hasattr(AlertModel, "tenant_id"):
             query = query.filter(AlertModel.tenant_id == tenant_id)
         recent = query.order_by(AlertModel.created_at.desc()).limit(100).all()
@@ -381,24 +647,48 @@ async def get_processes(hostname: str, request: Request, current_user: str = Dep
         for record in recent:
             if record.pid and record.pid not in seen:
                 seen.add(record.pid)
-                processes.append({
-                    "pid": record.pid,
-                    "name": (record.rule or record.type or "?")[:128],
-                    "cpu": 0.0,
-                    "memory": 0.0,
-                    "status": "running",
-                    "user": (record.username or "SYSTEM")[:128],
-                    "cmdline": (record.command_line or "")[:200],
-                })
+                processes.append(
+                    {
+                        "pid": record.pid,
+                        "name": (record.rule or record.type or "?")[:128],
+                        "cpu": 0.0,
+                        "memory": 0.0,
+                        "status": "running",
+                        "user": (record.username or "SYSTEM")[:128],
+                        "cmdline": (record.command_line or "")[:200],
+                    }
+                )
 
-        logger.info("process_list_requested request_id=%s tenant=%s host=%s user=%s source=%s process_count=%s command_id=%s", _get_request_id(request), tenant_id, hostname, current_user, "db_recent", len(processes), command_id)
-        return {"hostname": hostname, "source": "db_recent", "command_id": command_id, "processes": processes}
+        logger.info(
+            "process_list_requested request_id=%s tenant=%s host=%s user=%s source=%s process_count=%s command_id=%s",
+            _get_request_id(request),
+            tenant_id,
+            hostname,
+            current_user,
+            "db_recent",
+            len(processes),
+            command_id,
+        )
+        return {
+            "hostname": hostname,
+            "source": "db_recent",
+            "command_id": command_id,
+            "processes": processes,
+        }
     finally:
         db.close()
 
 
 @router.get("/api/commands")
-async def list_command_executions(limit: int = 50, hostname: Optional[str] = None, request: Request = None, current_user: str = Depends(require_role("analyst")), tenant_id: Optional[str] = Depends(get_current_tenant_id)):
+async def list_command_executions(
+    limit: int = 50,
+    hostname: Optional[str] = None,
+    request: Request = None,
+    current_user: str = Depends(require_role("analyst")),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    tenant_id = _effective_tenant_id(tenant_id, request)
+
     from app.database.db_manager import CommandExecutionModel
 
     db = SessionLocal()
@@ -409,9 +699,20 @@ async def list_command_executions(limit: int = 50, hostname: Optional[str] = Non
         if hostname:
             q = q.filter(CommandExecutionModel.target_hostname == hostname.strip())
 
-        rows = q.order_by(CommandExecutionModel.created_at.desc()).limit(max(1, min(limit, 200))).all()
+        rows = (
+            q.order_by(CommandExecutionModel.created_at.desc())
+            .limit(max(1, min(limit, 200)))
+            .all()
+        )
 
-        logger.info("command_history_requested request_id=%s tenant=%s user=%s hostname=%s count=%s", _get_request_id(request), tenant_id, current_user, hostname, len(rows))
+        logger.info(
+            "command_history_requested request_id=%s tenant=%s user=%s hostname=%s count=%s",
+            _get_request_id(request),
+            tenant_id,
+            current_user,
+            hostname,
+            len(rows),
+        )
         return [row.to_dict() for row in rows]
     finally:
         db.close()

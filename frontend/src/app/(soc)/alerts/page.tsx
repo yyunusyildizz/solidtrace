@@ -1,23 +1,26 @@
 "use client";
 
-import AuthGuard from "@/components/auth/AuthGuard";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { HostLastResponseActions } from "@/components/soc/host-last-response-actions";
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   Clock3,
+  Loader2,
   RefreshCw,
   Search,
   ShieldAlert,
+  ShieldCheck,
   UserPlus,
   Workflow,
   XCircle,
+  Usb,
+  PowerOff,
 } from "lucide-react";
 import { Panel } from "@/components/soc/ui/panel";
 import { HostResponseActions } from "@/components/soc/host-response-actions";
+import { HostLastResponseActions } from "@/components/soc/host-last-response-actions";
 import {
   acknowledgeAlert,
   assignAlert,
@@ -29,10 +32,12 @@ import {
   updateAlertNote,
   type AlertItem,
 } from "@/lib/api/alerts";
+import { disableUsb, enableUsb, isolateHost, unisolateHost } from "@/lib/api/actions";
 import { clearAuthSession, getToken } from "@/lib/auth";
 
 type SeverityFilter = "ALL" | "CRITICAL" | "HIGH" | "WARNING" | "INFO";
 type StatusFilter = "ALL" | "open" | "acknowledged" | "resolved";
+type QuickBusy = "isolate" | "unisolate" | "usb_disable" | "usb_enable" | null;
 
 function severityTone(severity?: string | null) {
   const value = (severity || "INFO").toUpperCase();
@@ -139,7 +144,7 @@ function InfoCard({
 }) {
   return (
     <div
-      className="rounded-2xl border p-4"
+      className="min-w-0 rounded-2xl border p-4"
       style={{
         borderColor: "var(--border)",
         background: "color-mix(in srgb, var(--surface-1) 88%, transparent)",
@@ -151,14 +156,482 @@ function InfoCard({
       >
         {label}
       </div>
-      <div className="text-sm" style={{ color: "var(--foreground)" }}>
+      <div className="break-words text-sm" style={{ color: "var(--foreground)" }}>
         {value}
       </div>
     </div>
   );
 }
 
-function AlertsPage() {
+function QuickHostActions({
+  alert,
+  disabled,
+  onDone,
+}: {
+  alert: AlertItem;
+  disabled?: boolean;
+  onDone: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<QuickBusy>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  if (!alert.hostname) return null;
+
+  async function runQuick(type: QuickBusy) {
+    if (!type || !alert.hostname) return;
+
+    try {
+      setBusy(type);
+      setMessage(null);
+      const token = getToken();
+
+      if (type === "isolate") {
+        await isolateHost(
+          {
+            hostname: alert.hostname,
+            rule: `quick isolate from alert queue: ${alert.id}`,
+          },
+          token ?? undefined,
+        );
+        setMessage("Isolate queued");
+      }
+
+      if (type === "unisolate") {
+        await unisolateHost(
+          {
+            hostname: alert.hostname,
+            rule: `quick unisolate from alert queue: ${alert.id}`,
+          },
+          token ?? undefined,
+        );
+        setMessage("Unisolate queued");
+      }
+
+      if (type === "usb_disable") {
+        await disableUsb(
+          {
+            hostname: alert.hostname,
+            rule: `quick usb off from alert queue: ${alert.id}`,
+          },
+          token ?? undefined,
+        );
+        setMessage("USB Off queued");
+      }
+
+      if (type === "usb_enable") {
+        await enableUsb(
+          {
+            hostname: alert.hostname,
+            rule: `quick usb on from alert queue: ${alert.id}`,
+          },
+          token ?? undefined,
+        );
+        setMessage("USB On queued");
+      }
+
+      await onDone();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Action failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const buttonClass =
+    "inline-flex w-full items-center justify-center gap-1.5 rounded-xl border px-2.5 py-2 text-[11px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
+
+  return (
+    <div
+      className="mt-3 min-w-0 border-t pt-3"
+      style={{ borderColor: "var(--border)" }}
+    >
+      <div
+        className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em]"
+        style={{ color: "var(--muted)" }}
+      >
+        Quick Response
+      </div>
+
+      <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4">
+        <button
+          disabled={disabled || busy !== null}
+          onClick={() => runQuick("isolate")}
+          className={buttonClass}
+          style={{
+            borderColor: "var(--border-strong)",
+            background: "var(--surface-1)",
+          }}
+        >
+          {busy === "isolate" ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <ShieldAlert size={14} />
+          )}
+          Isolate
+        </button>
+
+        <button
+          disabled={disabled || busy !== null}
+          onClick={() => runQuick("unisolate")}
+          className={buttonClass}
+          style={{
+            borderColor: "var(--border-strong)",
+            background: "var(--surface-1)",
+          }}
+        >
+          {busy === "unisolate" ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <ShieldCheck size={14} />
+          )}
+          Unisolate
+        </button>
+
+        <button
+          disabled={disabled || busy !== null}
+          onClick={() => runQuick("usb_disable")}
+          className={buttonClass}
+          style={{
+            borderColor: "var(--border-strong)",
+            background: "var(--surface-1)",
+          }}
+        >
+          {busy === "usb_disable" ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Usb size={14} />
+          )}
+          USB Off
+        </button>
+
+        <button
+          disabled={disabled || busy !== null}
+          onClick={() => runQuick("usb_enable")}
+          className={buttonClass}
+          style={{
+            borderColor: "var(--border-strong)",
+            background: "var(--surface-1)",
+          }}
+        >
+          {busy === "usb_enable" ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <PowerOff size={14} />
+          )}
+          USB On
+        </button>
+      </div>
+
+      {message ? (
+        <div className="mt-2 break-words text-xs" style={{ color: "var(--muted)" }}>
+          {message}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function InspectorSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      className="min-w-0 rounded-2xl border p-4"
+      style={{
+        borderColor: "var(--border)",
+        background: "var(--surface-0)",
+      }}
+    >
+      <div
+        className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
+        style={{ color: "var(--muted)" }}
+      >
+        {title}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function AlertInspector({
+  selectedAlert,
+  detailLoading,
+  actionLoading,
+  assignTo,
+  setAssignTo,
+  noteDraft,
+  setNoteDraft,
+  refreshSelected,
+  runAction,
+  onInvestigate,
+}: {
+  selectedAlert: AlertItem | null;
+  detailLoading: boolean;
+  actionLoading: boolean;
+  assignTo: string;
+  setAssignTo: (value: string) => void;
+  noteDraft: string;
+  setNoteDraft: (value: string) => void;
+  refreshSelected: () => Promise<void>;
+  runAction: (fn: (token: string) => Promise<unknown>) => Promise<void>;
+  onInvestigate: (alertId: string) => void;
+}) {
+  if (!selectedAlert) {
+    return (
+      <Panel title="Alert Inspector" subtitle="Select an alert to inspect and respond">
+        <div
+          className="rounded-2xl border p-8 text-center text-sm"
+          style={{
+            borderColor: "var(--border)",
+            background: "var(--surface-1)",
+            color: "var(--muted)",
+          }}
+        >
+          Soldaki kuyruktan bir alert seç. Detaylar, response aksiyonları ve analyst workflow burada sabit kalacak.
+        </div>
+      </Panel>
+    );
+  }
+
+  if (detailLoading) {
+    return (
+      <Panel title="Alert Inspector" subtitle="Loading selected alert detail">
+        <div
+          className="rounded-2xl border p-6 text-sm"
+          style={{
+            borderColor: "var(--border)",
+            background: "var(--surface-1)",
+            color: "var(--muted)",
+          }}
+        >
+          Alert detayı yükleniyor...
+        </div>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title="Alert Inspector" subtitle="Triage, ownership, escalation and response panel">
+      <div className="min-w-0 space-y-4">
+        <InspectorSection title="Detection Summary">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span
+              className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(selectedAlert.severity)}`}
+            >
+              {selectedAlert.severity || "INFO"}
+            </span>
+            <span
+              className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone(selectedAlert.status)}`}
+            >
+              {selectedAlert.status || "open"}
+            </span>
+          </div>
+
+          <div className="min-w-0 break-words text-base font-black">
+            {displayTitle(selectedAlert)}
+          </div>
+          <div className="mt-2 break-words text-sm" style={{ color: "var(--muted-strong)" }}>
+            {selectedAlert.details || "No alert details available."}
+          </div>
+        </InspectorSection>
+
+        <div className="grid min-w-0 gap-3 md:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
+          <InfoCard label="Alert ID" value={selectedAlert.id} />
+          <InfoCard label="Hostname" value={selectedAlert.hostname || "—"} />
+          <InfoCard label="Username" value={selectedAlert.username || "—"} />
+          <InfoCard label="Type" value={selectedAlert.type || "—"} />
+          <InfoCard label="Rule" value={selectedAlert.rule || "—"} />
+          <InfoCard label="Risk Score" value={String(selectedAlert.risk_score ?? 0)} />
+          <InfoCard
+            label="PID"
+            value={selectedAlert.pid != null ? String(selectedAlert.pid) : "—"}
+          />
+          <InfoCard label="Created At" value={fmtDate(selectedAlert.created_at)} />
+        </div>
+
+        {selectedAlert.hostname ? (
+          <InspectorSection title="Response Actions">
+            <HostResponseActions
+              hostname={selectedAlert.hostname}
+              compact
+              onActionComplete={refreshSelected}
+            />
+          </InspectorSection>
+        ) : null}
+
+        {selectedAlert.hostname ? (
+          <InspectorSection title="Last Response Actions">
+            <HostLastResponseActions hostname={selectedAlert.hostname} />
+          </InspectorSection>
+        ) : null}
+
+        <InspectorSection title="Command Line">
+          <div
+            className="max-h-44 overflow-y-auto rounded-xl p-3 font-mono text-xs leading-relaxed"
+            style={{
+              background: "var(--surface-1)",
+              color: "var(--muted-strong)",
+            }}
+          >
+            <pre className="whitespace-pre-wrap break-words">
+              {selectedAlert.command_line || "No command line data"}
+            </pre>
+          </div>
+        </InspectorSection>
+
+        <InspectorSection title="Assignment">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_auto] 2xl:grid-cols-1">
+            <input
+              value={assignTo}
+              onChange={(e) => setAssignTo(e.target.value)}
+              placeholder="analyst username"
+              className="min-w-0 rounded-xl border px-4 py-3 text-sm outline-none transition"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+                color: "var(--foreground)",
+              }}
+            />
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                disabled={actionLoading || !assignTo.trim()}
+                onClick={() =>
+                  runAction((token) => assignAlert(selectedAlert.id, assignTo.trim(), token))
+                }
+                className="inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  background: "var(--foreground)",
+                  color: "var(--background)",
+                }}
+              >
+                <UserPlus size={14} />
+                Assign
+              </button>
+
+              <button
+                disabled={actionLoading}
+                onClick={() => runAction((token) => unassignAlert(selectedAlert.id, token))}
+                className="rounded-xl border px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--surface-0)",
+                }}
+              >
+                Unassign
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
+            Current owner: {selectedAlert.assigned_to || "Unassigned"}
+          </div>
+        </InspectorSection>
+
+        <InspectorSection title="Analyst Note">
+          <textarea
+            value={noteDraft}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            rows={4}
+            className="min-w-0 w-full rounded-xl border px-4 py-3 text-sm outline-none transition"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-0)",
+              color: "var(--foreground)",
+            }}
+            placeholder="Investigation notes, triage context, next steps..."
+          />
+
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              disabled={actionLoading}
+              onClick={() =>
+                runAction((token) => updateAlertNote(selectedAlert.id, noteDraft, token))
+              }
+              className="rounded-xl px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+              style={{
+                background: "var(--foreground)",
+                color: "var(--background)",
+              }}
+            >
+              Save Note
+            </button>
+          </div>
+        </InspectorSection>
+
+        <InspectorSection title="Workflow Actions">
+          <div className="flex min-w-0 flex-wrap gap-3">
+            <button
+              disabled={actionLoading}
+              onClick={() => runAction((token) => acknowledgeAlert(selectedAlert.id, token))}
+              className="inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+              }}
+            >
+              <Clock3 size={14} />
+              Acknowledge
+            </button>
+
+            <button
+              disabled={actionLoading}
+              onClick={() => onInvestigate(selectedAlert.id)}
+              className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+              style={{
+                background: "var(--foreground)",
+                color: "var(--background)",
+              }}
+            >
+              <Workflow size={14} />
+              Investigate
+            </button>
+
+            <button
+              disabled={actionLoading}
+              onClick={() =>
+                runAction((token) =>
+                  resolveAlert(
+                    selectedAlert.id,
+                    noteDraft.trim() || "Resolved by analyst workflow",
+                    token,
+                  ),
+                )
+              }
+              className="inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+              }}
+            >
+              <CheckCircle2 size={14} />
+              Resolve
+            </button>
+
+            <button
+              disabled={actionLoading}
+              onClick={() => runAction((token) => reopenAlert(selectedAlert.id, token))}
+              className="inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+              style={{
+                borderColor: "var(--border)",
+                background: "var(--surface-0)",
+              }}
+            >
+              <XCircle size={14} />
+              Reopen
+            </button>
+          </div>
+        </InspectorSection>
+      </div>
+    </Panel>
+  );
+}
+
+export default function AlertsPage() {
   const router = useRouter();
 
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
@@ -230,6 +703,7 @@ function AlertsPage() {
 
   useEffect(() => {
     loadAlerts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filteredAlerts = useMemo(() => {
@@ -265,7 +739,8 @@ function AlertsPage() {
     return {
       total: alerts.length,
       open: alerts.filter((a) => (a.status || "open").toLowerCase() === "open").length,
-      acknowledged: alerts.filter((a) => (a.status || "").toLowerCase() === "acknowledged").length,
+      acknowledged: alerts.filter((a) => (a.status || "").toLowerCase() === "acknowledged")
+        .length,
       resolved: alerts.filter((a) => (a.status || "").toLowerCase() === "resolved").length,
       critical: alerts.filter((a) => (a.severity || "").toUpperCase() === "CRITICAL").length,
     };
@@ -303,21 +778,28 @@ function AlertsPage() {
     }
   }
 
+  async function refreshAfterQuickAction(alertId: string) {
+    await loadAlerts();
+    if (selectedAlert?.id === alertId) {
+      await refreshSelected();
+    }
+  }
+
   return (
-    <div className="grid gap-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
+    <div className="grid min-w-0 gap-6 overflow-x-hidden">
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
           <div
             className="text-[11px] font-bold uppercase tracking-[0.24em]"
             style={{ color: "var(--muted)" }}
           >
             Alert Triage
           </div>
-          <div className="mt-2 text-2xl font-black tracking-tight">
+          <div className="mt-2 break-words text-2xl font-black tracking-tight">
             Prioritize, assign and escalate high-signal detections
           </div>
           <div className="mt-2 text-sm" style={{ color: "var(--muted)" }}>
-            Queue-driven analyst workflow with direct handoff into investigations and response.
+            Queue-driven analyst workflow with a persistent right-side inspector.
           </div>
         </div>
 
@@ -334,7 +816,7 @@ function AlertsPage() {
         </button>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-5">
         <SummaryCard title="Total Alerts" value={summary.total} hint="Toplam uyarı" icon={<Activity size={15} />} />
         <SummaryCard title="Open" value={summary.open} hint="Yeni / aksiyon bekliyor" icon={<ShieldAlert size={15} />} />
         <SummaryCard title="Acknowledged" value={summary.acknowledged} hint="Analist üzerinde" icon={<Workflow size={15} />} />
@@ -342,16 +824,22 @@ function AlertsPage() {
         <SummaryCard title="Critical" value={summary.critical} hint="En yüksek öncelik" icon={<AlertTriangle size={15} />} />
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1.02fr_0.98fr]">
-        <Panel title="Alert Queue" subtitle="SOC triage görünümü">
-          <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_auto_auto]">
-            <div className="relative">
+      {error ? (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+          {error}
+        </div>
+      ) : null}
+
+      <div className="grid min-w-0 gap-6 overflow-x-hidden lg:grid-cols-[minmax(0,1fr)_430px] 2xl:grid-cols-[minmax(0,1fr)_480px]">
+        <Panel title="Alert Queue" subtitle="SOC triage queue with stable layout">
+          <div className="mb-4 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto]">
+            <div className="relative min-w-0">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="id, host, user, rule, process..."
-                className="w-full rounded-2xl border px-10 py-3 text-sm outline-none transition"
+                className="min-w-0 w-full rounded-2xl border px-10 py-3 text-sm outline-none transition"
                 style={{
                   borderColor: "var(--border)",
                   background: "var(--surface-0)",
@@ -417,20 +905,20 @@ function AlertsPage() {
               Eşleşen alert bulunamadı.
             </div>
           ) : (
-            <div className="space-y-3">
-              {/* REVİZE EDİLEN BÖLÜM: İnline Quick Response ve Tıklanabilir Summary Alanı */}
+            <div className="grid min-w-0 gap-3">
               {filteredAlerts.map((alert) => {
                 const isSelected = selectedAlert?.id === alert.id;
 
                 return (
                   <div
                     key={alert.id}
-                    className="rounded-2xl border p-4 transition"
+                    className="min-w-0 rounded-2xl border p-4 transition"
                     style={
                       isSelected
                         ? {
                             borderColor: "var(--foreground)",
-                            background: "color-mix(in srgb, var(--surface-1) 92%, transparent)",
+                            background:
+                              "color-mix(in srgb, var(--surface-1) 92%, transparent)",
                           }
                         : {
                             borderColor: "var(--border)",
@@ -440,360 +928,67 @@ function AlertsPage() {
                   >
                     <button
                       onClick={() => loadAlertDetail(alert.id)}
-                      className="w-full text-left"
+                      className="min-w-0 w-full text-left"
                     >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(alert.severity)}`}>
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(alert.severity)}`}
+                        >
                           {alert.severity || "INFO"}
                         </span>
-                        <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone(alert.status)}`}>
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone(alert.status)}`}
+                        >
                           {alert.status || "open"}
                         </span>
                       </div>
 
-                      <div className="mt-3 text-sm font-semibold">{displayTitle(alert)}</div>
-
-                      <div className="mt-1 text-xs" style={{ color: "var(--muted)" }}>
-                        {alert.id} · {alert.hostname || "unknown-host"} · {alert.username || "unknown-user"}
+                      <div className="mt-3 min-w-0 break-words text-sm font-semibold">
+                        {displayTitle(alert)}
                       </div>
 
-                      <div className="mt-2 flex flex-wrap gap-3 text-xs" style={{ color: "var(--muted-strong)" }}>
+                      <div className="mt-1 min-w-0 break-words text-xs" style={{ color: "var(--muted)" }}>
+                        {alert.id} · {alert.hostname || "unknown-host"} ·{" "}
+                        {alert.username || "unknown-user"}
+                      </div>
+
+                      <div
+                        className="mt-2 flex min-w-0 flex-wrap gap-3 text-xs"
+                        style={{ color: "var(--muted-strong)" }}
+                      >
                         <span>Risk: {alert.risk_score ?? 0}</span>
                         <span>Created: {relativeTime(alert.created_at)}</span>
                         <span>Owner: {alert.assigned_to || "Unassigned"}</span>
                       </div>
                     </button>
 
-                    {alert.hostname ? (
-                      <div
-                        className="mt-3 border-t pt-3"
-                        style={{ borderColor: "var(--border)" }}
-                      >
-                        <div
-                          className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em]"
-                          style={{ color: "var(--muted)" }}
-                        >
-                          Quick Response
-                        </div>
-
-                        <HostResponseActions
-                          hostname={alert.hostname}
-                          compact
-                          onActionComplete={async () => {
-                            await loadAlerts();
-                            if (selectedAlert?.id === alert.id) {
-                              await refreshSelected();
-                            }
-                          }}
-                        />
-                      </div>
-                    ) : null}
+                    <QuickHostActions
+                      alert={alert}
+                      disabled={actionLoading}
+                      onDone={() => refreshAfterQuickAction(alert.id)}
+                    />
                   </div>
                 );
               })}
-              {/* ---------------------------------------------------------------------- */}
             </div>
           )}
         </Panel>
 
-        <Panel title="Alert Detail" subtitle="Triage, ownership, escalation and response panel">
-          {error ? (
-            <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
-              {error}
-            </div>
-          ) : null}
-
-          {!selectedAlert ? (
-            <div
-              className="rounded-2xl border p-8 text-center text-sm"
-              style={{
-                borderColor: "var(--border)",
-                background: "var(--surface-1)",
-                color: "var(--muted)",
-              }}
-            >
-              İncelemek için soldan bir alert seç.
-            </div>
-          ) : detailLoading ? (
-            <div
-              className="rounded-2xl border p-6 text-sm"
-              style={{
-                borderColor: "var(--border)",
-                background: "var(--surface-1)",
-                color: "var(--muted)",
-              }}
-            >
-              Alert detayı yükleniyor...
-            </div>
-          ) : (
-            <div className="space-y-6">
-              <section
-                className="rounded-2xl border p-4"
-                style={{
-                  borderColor: "var(--border)",
-                  background: "color-mix(in srgb, var(--surface-1) 86%, transparent)",
-                }}
-              >
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(selectedAlert.severity)}`}>
-                    {selectedAlert.severity || "INFO"}
-                  </span>
-                  <span className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${statusTone(selectedAlert.status)}`}>
-                    {selectedAlert.status || "open"}
-                  </span>
-                </div>
-
-                <div className="text-base font-black">{displayTitle(selectedAlert)}</div>
-                <div className="mt-2 text-sm" style={{ color: "var(--muted-strong)" }}>
-                  {selectedAlert.details || "No alert details available."}
-                </div>
-              </section>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <InfoCard label="Alert ID" value={selectedAlert.id} />
-                <InfoCard label="Hostname" value={selectedAlert.hostname || "—"} />
-                <InfoCard label="Username" value={selectedAlert.username || "—"} />
-                <InfoCard label="Type" value={selectedAlert.type || "—"} />
-                <InfoCard label="Rule" value={selectedAlert.rule || "—"} />
-                <InfoCard label="Risk Score" value={String(selectedAlert.risk_score ?? 0)} />
-                <InfoCard label="PID" value={selectedAlert.pid != null ? String(selectedAlert.pid) : "—"} />
-                <InfoCard label="Created At" value={fmtDate(selectedAlert.created_at)} />
-              </div>
-
-              {selectedAlert.hostname ? (
-                <section
-                  className="rounded-2xl border p-4"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <div
-                    className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
-                    style={{ color: "var(--muted)" }}
-                  >
-                    Response Actions
-                  </div>
-                  <HostResponseActions
-                    hostname={selectedAlert.hostname}
-                    compact
-                    onActionComplete={refreshSelected}
-                  />
-                </section>
-              ) : null}
-
-              {selectedAlert.hostname ? (
-                <section
-                  className="rounded-2xl border p-4"
-                  style={{ borderColor: "var(--border)" }}
-                >
-                  <div
-                    className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
-                    style={{ color: "var(--muted)" }}
-                  >
-                    Last Response Actions
-                  </div>
-                  <HostLastResponseActions hostname={selectedAlert.hostname} />
-                </section>
-              ) : null}
-
-              <section
-                className="rounded-2xl border p-4"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <div
-                  className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
-                  style={{ color: "var(--muted)" }}
-                >
-                  Command Line
-                </div>
-                <div
-                  className="rounded-xl p-3 font-mono-ui text-xs"
-                  style={{
-                    background: "var(--surface-1)",
-                    color: "var(--muted-strong)",
-                  }}
-                >
-                  {selectedAlert.command_line || "No command line data"}
-                </div>
-              </section>
-
-              <section
-                className="rounded-2xl border p-4"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <div
-                  className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
-                  style={{ color: "var(--muted)" }}
-                >
-                  Assignment
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
-                  <input
-                    value={assignTo}
-                    onChange={(e) => setAssignTo(e.target.value)}
-                    placeholder="analyst username"
-                    className="rounded-xl border px-4 py-3 text-sm outline-none transition"
-                    style={{
-                      borderColor: "var(--border)",
-                      background: "var(--surface-0)",
-                      color: "var(--foreground)",
-                    }}
-                  />
-
-                  <button
-                    disabled={actionLoading || !assignTo.trim()}
-                    onClick={() => runAction((token) => assignAlert(selectedAlert.id, assignTo.trim(), token))}
-                    className="inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      background: "var(--foreground)",
-                      color: "var(--background)",
-                    }}
-                  >
-                    <UserPlus size={14} />
-                    Assign
-                  </button>
-
-                  <button
-                    disabled={actionLoading}
-                    onClick={() => runAction((token) => unassignAlert(selectedAlert.id, token))}
-                    className="rounded-xl border px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--border)",
-                      background: "var(--surface-0)",
-                    }}
-                  >
-                    Unassign
-                  </button>
-                </div>
-
-                <div className="mt-3 text-xs" style={{ color: "var(--muted)" }}>
-                  Current owner: {selectedAlert.assigned_to || "Unassigned"}
-                </div>
-              </section>
-
-              <section
-                className="rounded-2xl border p-4"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <div
-                  className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
-                  style={{ color: "var(--muted)" }}
-                >
-                  Analyst Note
-                </div>
-
-                <textarea
-                  value={noteDraft}
-                  onChange={(e) => setNoteDraft(e.target.value)}
-                  rows={4}
-                  className="w-full rounded-xl border px-4 py-3 text-sm outline-none transition"
-                  style={{
-                    borderColor: "var(--border)",
-                    background: "var(--surface-0)",
-                    color: "var(--foreground)",
-                  }}
-                  placeholder="Investigation notes, triage context, next steps..."
-                />
-
-                <div className="mt-3 flex flex-wrap gap-3">
-                  <button
-                    disabled={actionLoading}
-                    onClick={() => runAction((token) => updateAlertNote(selectedAlert.id, noteDraft, token))}
-                    className="rounded-xl px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      background: "var(--foreground)",
-                      color: "var(--background)",
-                    }}
-                  >
-                    Save Note
-                  </button>
-                </div>
-              </section>
-
-              <section
-                className="rounded-2xl border p-4"
-                style={{ borderColor: "var(--border)" }}
-              >
-                <div
-                  className="mb-3 text-xs font-bold uppercase tracking-[0.2em]"
-                  style={{ color: "var(--muted)" }}
-                >
-                  Workflow Actions
-                </div>
-
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    disabled={actionLoading}
-                    onClick={() => runAction((token) => acknowledgeAlert(selectedAlert.id, token))}
-                    className="inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--border)",
-                      background: "var(--surface-0)",
-                    }}
-                  >
-                    <Clock3 size={14} />
-                    Acknowledge
-                  </button>
-
-                  <button
-                    disabled={actionLoading}
-                    onClick={() => router.push(`/investigations?alert_id=${selectedAlert.id}`)}
-                    className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      background: "var(--foreground)",
-                      color: "var(--background)",
-                    }}
-                  >
-                    <Workflow size={14} />
-                    Investigate
-                  </button>
-
-                  <button
-                    disabled={actionLoading}
-                    onClick={() =>
-                      runAction((token) =>
-                        resolveAlert(
-                          selectedAlert.id,
-                          noteDraft.trim() || "Resolved by analyst workflow",
-                          token,
-                        ),
-                      )
-                    }
-                    className="inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--border)",
-                      background: "var(--surface-0)",
-                    }}
-                  >
-                    <CheckCircle2 size={14} />
-                    Resolve
-                  </button>
-
-                  <button
-                    disabled={actionLoading}
-                    onClick={() => runAction((token) => reopenAlert(selectedAlert.id, token))}
-                    className="inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
-                    style={{
-                      borderColor: "var(--border)",
-                      background: "var(--surface-0)",
-                    }}
-                  >
-                    <XCircle size={14} />
-                    Reopen
-                  </button>
-                </div>
-              </section>
-            </div>
-          )}
-        </Panel>
+        <div className="min-w-0 lg:sticky lg:top-6 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
+          <AlertInspector
+            selectedAlert={selectedAlert}
+            detailLoading={detailLoading}
+            actionLoading={actionLoading}
+            assignTo={assignTo}
+            setAssignTo={setAssignTo}
+            noteDraft={noteDraft}
+            setNoteDraft={setNoteDraft}
+            refreshSelected={refreshSelected}
+            runAction={runAction}
+            onInvestigate={(alertId) => router.push(`/investigations?alert_id=${alertId}`)}
+          />
+        </div>
       </div>
     </div>
-  );
-}
-
-export default function AlertsPagePage() {
-  return (
-    <AuthGuard>
-      <AlertsPage />
-    </AuthGuard>
   );
 }

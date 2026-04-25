@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, Shield } from "lucide-react";
 import { login } from "@/lib/api/auth";
@@ -17,8 +17,9 @@ export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
+  const passwordRef = useRef<HTMLInputElement>(null);
+
   const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -33,13 +34,22 @@ export default function LoginPage() {
     }
   }, [router, next]);
 
-  async function onSubmit(e: FormEvent) {
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
+    const cleanUsername = username.trim();
+    const password = passwordRef.current?.value ?? "";
+
+    if (!cleanUsername || !password) {
+      setError("Kullanıcı adı ve şifre gerekli.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
-      const response = await login(username.trim(), password);
+      const response = await login(cleanUsername, password);
 
       if (!response.access_token) {
         throw new Error("Login başarılı ama access token dönmedi");
@@ -52,12 +62,20 @@ export default function LoginPage() {
       setAuthSession({
         accessToken: response.access_token,
         refreshToken: response.refresh_token ?? null,
-        username: username.trim(),
+        username: cleanUsername,
       });
+
+      if (passwordRef.current) {
+        passwordRef.current.value = "";
+      }
 
       router.replace(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Giriş başarısız");
+
+      if (passwordRef.current) {
+        passwordRef.current.value = "";
+      }
     } finally {
       setLoading(false);
     }
@@ -144,10 +162,15 @@ export default function LoginPage() {
             </div>
           ) : null}
 
-          <form onSubmit={onSubmit} className="space-y-4">
+          <form onSubmit={onSubmit} className="space-y-4" autoComplete="on">
             <div>
-              <label className="mb-2 block text-sm font-medium">Username</label>
+              <label htmlFor="username" className="mb-2 block text-sm font-medium">
+                Username
+              </label>
               <input
+                id="username"
+                name="username"
+                autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
@@ -161,11 +184,16 @@ export default function LoginPage() {
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium">Password</label>
+              <label htmlFor="password" className="mb-2 block text-sm font-medium">
+                Password
+              </label>
               <input
+                ref={passwordRef}
+                id="password"
+                name="password"
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
                 className="w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
                 style={{
                   borderColor: "var(--border)",
@@ -178,7 +206,7 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading || !username.trim() || !password}
+              disabled={loading || !username.trim()}
               className="w-full rounded-2xl px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
               style={{
                 background: "var(--foreground)",

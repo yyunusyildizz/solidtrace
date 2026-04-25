@@ -1,0 +1,35 @@
+[35magent_rust/.env.example[m[36m:[m[32m9[m[36m:[mSOLIDTRACE_AGENT_KEY=CHANGE_ME_[1;31mAGENT_SECRET[m_KEY
+[35mbackend/.env.example[m[36m:[m[32m12[m[36m:[m[1;31mJWT_SECRET[m_KEY=CHANGE_ME_GENERATE_A_STRONG_SECRET
+[35mbackend/.env.example[m[36m:[m[32m29[m[36m:[mAGENT_KEY=CHANGE_ME_[1;31mAGENT_SECRET[m_KEY
+[35mbackend/.env.example[m[36m:[m[32m31[m[36m:[m[1;31mAGENT_SECRET[m_KEK=CHANGE_ME_GENERATE_FERNET_KEY
+[35mbackend/.env.example[m[36m:[m[32m38[m[36m:[mSOLIDTRACE_COMMAND_SIGNING_[1;31mPRIVATE_KEY[m=CHANGE_ME_SIGNING_KEY
+[35mbackend/.env.example[m[36m:[m[32m56[m[36m:[mOTX_[1;31mAPI_KEY[m=
+[35mbackend/.env.example[m[36m:[m[32m57[m[36m:[mGROQ_[1;31mAPI_KEY[m=
+[35mbackend/.env.example[m[36m:[m[32m58[m[36m:[mBAZAAR_[1;31mAPI_KEY[m=
+[35mbackend/app/core/config.py[m[36m:[m[32m19[m[36m:[m    [1;31mJWT_SECRET[m_KEY: str = os.getenv("[1;31mJWT_SECRET[m_KEY", "")
+[35mbackend/app/core/config.py[m[36m:[m[32m20[m[36m:[m    [1;31mAGENT_SECRET[m_KEK: str = os.getenv("[1;31mAGENT_SECRET[m_KEK", "")
+[35mbackend/app/core/security.py[m[36m:[m[32m29[m[36m:[mSECRET_KEY = os.getenv("[1;31mJWT_SECRET[m_KEY")
+[35mbackend/app/core/security.py[m[36m:[m[32m31[m[36m:[m    logger.critical("[1;31mJWT_SECRET[m_KEY tanımlı değil")
+[35mbackend/app/core/security.py[m[36m:[m[32m32[m[36m:[m    raise RuntimeError("[1;31mJWT_SECRET[m_KEY tanımlı değil")
+[35mbackend/app/core/security.py[m[36m:[m[32m51[m[36m:[m[1;31mAGENT_SECRET[m_KEK = os.getenv("[1;31mAGENT_SECRET[m_KEK")
+[35mbackend/app/core/security.py[m[36m:[m[32m52[m[36m:[mif not [1;31mAGENT_SECRET[m_KEK:
+[35mbackend/app/core/security.py[m[36m:[m[32m53[m[36m:[m    logger.warning("[1;31mAGENT_SECRET[m_KEK tanımlı değil. Agent auth aktif edilmeden önce set edilmeli.")
+[35mbackend/app/core/security.py[m[36m:[m[32m248[m[36m:[m    if not [1;31mAGENT_SECRET[m_KEK:
+[35mbackend/app/core/security.py[m[36m:[m[32m249[m[36m:[m        raise RuntimeError("[1;31mAGENT_SECRET[m_KEK tanımlı değil")
+[35mbackend/app/core/security.py[m[36m:[m[32m251[m[36m:[m        return Fernet([1;31mAGENT_SECRET[m_KEK.encode("utf-8"))
+[35mbackend/app/core/security.py[m[36m:[m[32m253[m[36m:[m        raise RuntimeError("[1;31mAGENT_SECRET[m_KEK geçersiz; Fernet key formatında olmalı") from exc
+[35mbackend/app/services/ai_analysis.py[m[36m:[m[32m16[m[36m:[mGROQ_[1;31mAPI_KEY[m = os.getenv("GROQ_[1;31mAPI_KEY[m")
+[35mbackend/app/services/ai_analysis.py[m[36m:[m[32m33[m[36m:[m        local_client = Groq(api_key=GROQ_[1;31mAPI_KEY[m) if GROQ_[1;31mAPI_KEY[m else None
+[35mbackend/app/services/ai_analysis.py[m[36m:[m[32m39[m[36m:[m        await _broadcast({"type": "ACTION_LOG", "message": "❌ AI Devre Dışı (GROQ_[1;31mAPI_KEY[m eksik)"})
+[35mbackend/app/services/threat_intel.py[m[36m:[m[32m33[m[36m:[mOTX_[1;31mAPI_KEY[m = os.getenv("OTX_[1;31mAPI_KEY[m")
+[35mbackend/app/services/threat_intel.py[m[36m:[m[32m34[m[36m:[mBAZAAR_[1;31mAPI_KEY[m = os.getenv("BAZAAR_[1;31mAPI_KEY[m")
+[35mbackend/app/services/threat_intel.py[m[36m:[m[32m115[m[36m:[m    if not OTX_[1;31mAPI_KEY[m:
+[35mbackend/app/services/threat_intel.py[m[36m:[m[32m122[m[36m:[m        res = await client.get(url, headers={"X-OTX-API-KEY": OTX_[1;31mAPI_KEY[m}, timeout=5.0)
+[35mbackend/app/services/threat_intel.py[m[36m:[m[32m138[m[36m:[m    if not BAZAAR_[1;31mAPI_KEY[m:
+[35mbackend/app/services/threat_intel.py[m[36m:[m[32m146[m[36m:[m            headers={"Auth-Key": BAZAAR_[1;31mAPI_KEY[m},
+[35mbackend/isolate_test.py[m[36m:[m[32m7[m[36m:[m[1;31mPASSWORD =[m os.getenv("SOLIDTRACE_ADMIN_PASSWORD", "CHANGE_ME")
+[35mbackend/unisolate_test.py[m[36m:[m[32m7[m[36m:[m[1;31mPASSWORD =[m os.getenv("SOLIDTRACE_ADMIN_PASSWORD", "CHANGE_ME")
+[35mfrontend/src/app/api/analyze/route.js[m[36m:[m[32m6[m[36m:[m    apiKey: process.env.GROQ_[1;31mAPI_KEY[m
+[35mfrontend/src/app/api/chat/route.js[m[36m:[m[32m6[m[36m:[m    const apiKey = process.env.GROQ_[1;31mAPI_KEY[m;
+[35mfrontend/src/app/api/chat/route.js[m[36m:[m[32m8[m[36m:[m      throw new Error("GROQ_[1;31mAPI_KEY[m bulunamadı!");
+[35mreset_admin_secure.py[m[36m:[m[32m9[m[36m:[mNEW_[1;31mPASSWORD =[m os.getenv("SOLIDTRACE_ADMIN_PASSWORD", "CHANGE_ME")
