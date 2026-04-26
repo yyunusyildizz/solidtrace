@@ -8,8 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import desc, or_
 
 from app.core.security import get_current_user, get_current_tenant_id
-from app.database.db_manager import SessionLocal, AlertModel
-from app.schemas.models import AlertResponse
+from app.database.db_manager import SessionLocal, AlertModel, write_audit
+from app.schemas.models import (
+    AlertResponse,
+    AlertActionResponse,
+    AlertAssignRequest,
+    AlertNoteUpdateRequest,
+    AlertResolveRequest,
+)
 
 logger = logging.getLogger("SolidTrace.Alerts")
 router = APIRouter(tags=["alerts"])
@@ -122,5 +128,223 @@ async def get_alert_detail(
         )
 
         return AlertResponse(**alert.to_dict())
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# ALERT WORKFLOW ENDPOINTS
+# ---------------------------------------------------------------------------
+
+
+def _build_action_response(alert: AlertModel) -> AlertActionResponse:
+    return AlertActionResponse(
+        status=alert.status or "open",
+        alert_id=alert.id,
+        analyst_note=alert.analyst_note,
+        assigned_to=alert.assigned_to,
+        assigned_at=alert.assigned_at,
+    )
+
+
+@router.patch("/api/alerts/{alert_id}/assign", response_model=AlertActionResponse)
+async def assign_alert(
+    alert_id: str,
+    body: AlertAssignRequest,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    db = SessionLocal()
+    try:
+        alert = _alert_query_for_tenant(db, tenant_id).filter(AlertModel.id == alert_id).first()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert bulunamadı")
+
+        alert.assigned_to = body.assigned_to
+        alert.assigned_at = datetime.now(timezone.utc).isoformat()
+        db.commit()
+        db.refresh(alert)
+
+        await write_audit(
+            db, current_user, "ALERT_ASSIGN",
+            target=alert_id,
+            detail=f"assigned_to={body.assigned_to}",
+            tenant_id=tenant_id,
+        )
+
+        logger.info(
+            "alert_assigned request_id=%s tenant=%s user=%s alert_id=%s assigned_to=%s",
+            _get_request_id(request), tenant_id, current_user, alert_id, body.assigned_to,
+        )
+        return _build_action_response(alert)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("alert_assign_failed alert_id=%s error=%s", alert_id, exc)
+        raise HTTPException(status_code=500, detail="Alert assign başarısız")
+    finally:
+        db.close()
+
+
+@router.patch("/api/alerts/{alert_id}/unassign", response_model=AlertActionResponse)
+async def unassign_alert(
+    alert_id: str,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    db = SessionLocal()
+    try:
+        alert = _alert_query_for_tenant(db, tenant_id).filter(AlertModel.id == alert_id).first()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert bulunamadı")
+
+        alert.assigned_to = None
+        alert.assigned_at = None
+        db.commit()
+        db.refresh(alert)
+
+        await write_audit(
+            db, current_user, "ALERT_UNASSIGN",
+            target=alert_id,
+            tenant_id=tenant_id,
+        )
+
+        logger.info(
+            "alert_unassigned request_id=%s tenant=%s user=%s alert_id=%s",
+            _get_request_id(request), tenant_id, current_user, alert_id,
+        )
+        return _build_action_response(alert)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("alert_unassign_failed alert_id=%s error=%s", alert_id, exc)
+        raise HTTPException(status_code=500, detail="Alert unassign başarısız")
+    finally:
+        db.close()
+
+
+@router.patch("/api/alerts/{alert_id}/note", response_model=AlertActionResponse)
+async def update_alert_note(
+    alert_id: str,
+    body: AlertNoteUpdateRequest,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    db = SessionLocal()
+    try:
+        alert = _alert_query_for_tenant(db, tenant_id).filter(AlertModel.id == alert_id).first()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert bulunamadı")
+
+        alert.analyst_note = body.note
+        db.commit()
+        db.refresh(alert)
+
+        await write_audit(
+            db, current_user, "ALERT_NOTE_UPDATE",
+            target=alert_id,
+            detail=f"note_length={len(body.note)}",
+            tenant_id=tenant_id,
+        )
+
+        logger.info(
+            "alert_note_updated request_id=%s tenant=%s user=%s alert_id=%s",
+            _get_request_id(request), tenant_id, current_user, alert_id,
+        )
+        return _build_action_response(alert)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("alert_note_update_failed alert_id=%s error=%s", alert_id, exc)
+        raise HTTPException(status_code=500, detail="Alert not güncelleme başarısız")
+    finally:
+        db.close()
+
+
+@router.patch("/api/alerts/{alert_id}/resolve", response_model=AlertActionResponse)
+async def resolve_alert(
+    alert_id: str,
+    body: AlertResolveRequest,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    db = SessionLocal()
+    try:
+        alert = _alert_query_for_tenant(db, tenant_id).filter(AlertModel.id == alert_id).first()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert bulunamadı")
+
+        alert.status = "resolved"
+        alert.resolved_at = datetime.now(timezone.utc).isoformat()
+        alert.resolved_by = current_user
+        if body.note is not None:
+            alert.analyst_note = body.note
+        db.commit()
+        db.refresh(alert)
+
+        await write_audit(
+            db, current_user, "ALERT_RESOLVE",
+            target=alert_id,
+            tenant_id=tenant_id,
+        )
+
+        logger.info(
+            "alert_resolved request_id=%s tenant=%s user=%s alert_id=%s",
+            _get_request_id(request), tenant_id, current_user, alert_id,
+        )
+        return _build_action_response(alert)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("alert_resolve_failed alert_id=%s error=%s", alert_id, exc)
+        raise HTTPException(status_code=500, detail="Alert resolve başarısız")
+    finally:
+        db.close()
+
+
+@router.patch("/api/alerts/{alert_id}/reopen", response_model=AlertActionResponse)
+async def reopen_alert(
+    alert_id: str,
+    request: Request,
+    current_user: str = Depends(get_current_user),
+    tenant_id: Optional[str] = Depends(get_current_tenant_id),
+):
+    db = SessionLocal()
+    try:
+        alert = _alert_query_for_tenant(db, tenant_id).filter(AlertModel.id == alert_id).first()
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert bulunamadı")
+
+        alert.status = "open"
+        alert.resolved_at = None
+        alert.resolved_by = None
+        db.commit()
+        db.refresh(alert)
+
+        await write_audit(
+            db, current_user, "ALERT_REOPEN",
+            target=alert_id,
+            tenant_id=tenant_id,
+        )
+
+        logger.info(
+            "alert_reopened request_id=%s tenant=%s user=%s alert_id=%s",
+            _get_request_id(request), tenant_id, current_user, alert_id,
+        )
+        return _build_action_response(alert)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.exception("alert_reopen_failed alert_id=%s error=%s", alert_id, exc)
+        raise HTTPException(status_code=500, detail="Alert reopen başarısız")
     finally:
         db.close()

@@ -17,7 +17,7 @@ Opsiyonel:
 
 Gerekli env:
 PowerShell:
-  $env:SOLIDTRACE_ADMIN_PASSWORD="GERCEK_ADMIN_SIFREN"
+  $env:SOLIDTRACE_ADMIN_PASSWORD="GucluSifre123!"
   $env:SOLIDTRACE_TENANT_ID="default_tenant"
 
 Synthetic için ayrıca:
