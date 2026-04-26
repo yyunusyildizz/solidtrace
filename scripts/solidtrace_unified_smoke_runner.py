@@ -51,11 +51,25 @@ def find_script(name: str) -> Path | None:
     return None
 
 
+SENSITIVE_FLAGS = {"--password", "--agent-secret", "--token", "--secret", "--api-key"}
+
+
+def _sanitize_cmd(cmd: list[str]) -> list[str]:
+    """Return a copy of *cmd* with sensitive flag values replaced by '***'."""
+    sanitized = list(cmd)
+    i = 0
+    while i < len(sanitized) - 1:
+        if sanitized[i].lower() in SENSITIVE_FLAGS:
+            sanitized[i + 1] = "***"
+        i += 1
+    return sanitized
+
+
 def run_cmd(label: str, cmd: list[str], cwd: Path | None = None, required: bool = True) -> bool:
     print("\n" + "=" * 72)
     print(f"▶ {label}")
     print("=" * 72)
-    print(" ".join(cmd))
+    print(" ".join(_sanitize_cmd(cmd)))
 
     result = subprocess.run(cmd, cwd=str(cwd or ROOT), text=True)
 
