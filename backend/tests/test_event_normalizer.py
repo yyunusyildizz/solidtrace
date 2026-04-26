@@ -295,7 +295,7 @@ class TestAlertNormalization:
         assert result.raw_ref_id == "alert-abc-123"
         assert result.hostname == "SRV-PROD"
         assert result.username == "svc_account"
-        assert result.risk_score == 85
+        assert result.risk_score == 90  # CRITICAL severity → min 90 (calibrated from 85)
         assert result.process_name == "mimikatz.exe"
         assert result.source == "alert_service"
         assert result.attributes["rule"] == "Credential Dumping Detected"
@@ -478,3 +478,66 @@ class TestEdgeCases:
         assert len(ips) == 2
         assert ips[0] == "10.0.0.1"
         assert ips[1] == "192.168.1.1"
+
+
+# ---------------------------------------------------------------------------
+# Risk Score Calibration Testleri
+# ---------------------------------------------------------------------------
+
+class TestRiskScoreCalibration:
+
+    def test_critical_severity_min_90(self):
+        result = EventNormalizer._calibrate_risk_score(0, "CRITICAL")
+        assert result == 90
+
+    def test_high_severity_min_75(self):
+        result = EventNormalizer._calibrate_risk_score(0, "HIGH")
+        assert result == 75
+
+    def test_medium_severity_min_50(self):
+        result = EventNormalizer._calibrate_risk_score(10, "MEDIUM")
+        assert result == 50
+
+    def test_low_severity_min_25(self):
+        result = EventNormalizer._calibrate_risk_score(5, "LOW")
+        assert result == 25
+
+    def test_info_no_raise(self):
+        result = EventNormalizer._calibrate_risk_score(15, "INFO")
+        assert result == 15
+
+    def test_already_high_risk_unchanged(self):
+        result = EventNormalizer._calibrate_risk_score(80, "HIGH")
+        assert result == 80
+
+    def test_risk_clamped_at_100(self):
+        result = EventNormalizer._calibrate_risk_score(150, "CRITICAL")
+        assert result == 100
+
+    def test_case_insensitive(self):
+        result = EventNormalizer._calibrate_risk_score(0, "high")
+        assert result == 75
+
+    def test_raw_event_high_severity_zero_risk_calibrated(self):
+        normalizer = EventNormalizer()
+        result = normalizer.normalize("raw_event", {
+            "type": "PROCESS_START",
+            "hostname": "WS-01",
+            "command_line": "suspicious.exe",
+            "severity": "HIGH",
+            "risk_score": 0,
+        }, tenant_id="t-1")
+        assert result.risk_score >= 75
+        assert result.severity == "HIGH"
+
+    def test_alert_critical_severity_low_risk_calibrated(self):
+        normalizer = EventNormalizer()
+        result = normalizer.normalize("alert", {
+            "id": "alert-cal-1",
+            "hostname": "SRV-01",
+            "command_line": "evil.exe",
+            "severity": "CRITICAL",
+            "risk_score": 10,
+        }, tenant_id="t-1")
+        assert result.risk_score >= 90
+        assert result.severity == "CRITICAL"

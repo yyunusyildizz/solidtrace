@@ -521,5 +521,5 @@ class TestPipelineSummary:
         ]
         result = self.pipeline.build_from_raw_events(raw, tenant_id="t-1")
         assert result.summary["total_stories"] == 0
-        assert result.summary["max_risk_score"] == 40
+        assert result.summary["max_risk_score"] == 50  # MEDIUM severity → min 50 (calibrated from 40)
         assert result.summary["highest_severity"] == "MEDIUM"

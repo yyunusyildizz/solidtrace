@@ -64,6 +64,15 @@ _MITRE_KEYWORD_MAP: Dict[str, Dict[str, str]] = {
 
 DEFAULT_TENANT_ID = "default_tenant"
 
+# Severity → minimum risk_score mapping (risk calibration)
+_SEVERITY_MIN_RISK: Dict[str, int] = {
+    "CRITICAL": 90,
+    "HIGH": 75,
+    "MEDIUM": 50,
+    "LOW": 25,
+    "INFO": 0,
+}
+
 
 # ---------------------------------------------------------------------------
 # EventNormalizer
@@ -164,7 +173,7 @@ class EventNormalizer:
             username=data.get("user"),
             process_name=process_name,
             command_line=command_line or None,
-            risk_score=max(0, min(100, risk_score)),
+            risk_score=self._calibrate_risk_score(risk_score, severity),
             severity=severity,
             mitre_tactic=mitre.get("tactic"),
             mitre_technique=mitre.get("technique"),
@@ -219,7 +228,7 @@ class EventNormalizer:
             username=data.get("user"),
             process_name=process_name,
             command_line=command_line or None,
-            risk_score=max(0, min(100, risk_score)),
+            risk_score=self._calibrate_risk_score(risk_score, severity),
             severity=severity,
             mitre_tactic=mitre_tactic,
             mitre_technique=mitre_technique,
@@ -270,7 +279,7 @@ class EventNormalizer:
             username=data.get("username"),
             process_name=process_name,
             command_line=command_line or None,
-            risk_score=max(0, min(100, risk_score)),
+            risk_score=self._calibrate_risk_score(risk_score, severity),
             severity=severity,
             mitre_tactic=mitre.get("tactic"),
             mitre_technique=mitre.get("technique"),
@@ -367,7 +376,7 @@ class EventNormalizer:
             process_name=None,
             command_line=None,
             source_ip=source_ip,
-            risk_score=max(0, min(100, risk_score)),
+            risk_score=self._calibrate_risk_score(risk_score, severity),
             severity=severity,
             mitre_tactic="Initial Access",
             mitre_technique="T1078",
@@ -413,7 +422,7 @@ class EventNormalizer:
             command_line=data.get("command_line") or None,
             source_ip=source_ip,
             destination_ip=destination_ip,
-            risk_score=max(0, min(100, risk_score)),
+            risk_score=self._calibrate_risk_score(risk_score, severity),
             severity=severity,
             mitre_tactic="Command and Control" if risk_score >= 50 else None,
             mitre_technique="T1071" if risk_score >= 50 else None,
@@ -492,6 +501,17 @@ class EventNormalizer:
         if score_rank > raw_rank:
             return score_sev
         return cleaned if cleaned in order else "INFO"
+
+    @staticmethod
+    def _calibrate_risk_score(risk_score: int, severity: str) -> int:
+        """
+        Severity'ye göre minimum risk_score uygular.
+        risk_score zaten yüksekse dokunmaz; düşükse severity
+        minimum değerine yükseltir. 0-100 clamp.
+        """
+        minimum = _SEVERITY_MIN_RISK.get(severity.strip().upper(), 0)
+        calibrated = max(risk_score, minimum)
+        return max(0, min(100, calibrated))
 
     @staticmethod
     def _infer_mitre(command_line: str, details: str) -> Dict[str, Optional[str]]:
