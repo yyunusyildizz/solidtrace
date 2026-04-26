@@ -128,6 +128,7 @@ safe_include_router("app.api.routes_assets", label="assets")
 safe_include_router("app.api.routes_dashboard", label="dashboard")
 safe_include_router("app.api.routes_sigma", label="sigma")
 safe_include_router("app.api.routes_ueba", label="ueba")
+safe_include_router("app.api.routes_story", label="story")
 
 
 def _load_optional_module(*paths: str) -> Optional[Any]:
