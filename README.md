@@ -40,17 +40,17 @@ It goes beyond traditional log monitoring by enabling **real-time detection, cor
 ## 🧱 Architecture Overview
 
 
-Agent (Rust)
-↓
-Ingestion Layer
-↓
-Detection Engine (Sigma + Correlation)
-↓
-Incident Engine
-↓
-Investigation Layer (Graph + Timeline)
-↓
-SOC Frontend (Next.js)
+ Agent (Rust)
+     ↓
+ Ingestion Layer
+     ↓
+ Detection Engine (Sigma + Correlation)
+     ↓
+ Incident Engine
+     ↓
+ Investigation Layer (Graph + Timeline)
+     ↓
+ SOC Frontend (Next.js)
 
 
 ---
