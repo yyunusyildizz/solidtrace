@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   Activity,
   AlertTriangle,
+  BookOpen,
   CheckCircle2,
   Clock3,
   Loader2,
@@ -33,6 +34,7 @@ import {
   type AlertItem,
 } from "@/lib/api/alerts";
 import { disableUsb, enableUsb, isolateHost, unisolateHost } from "@/lib/api/actions";
+import { previewStory, type StoryPreviewResponse, type AttackStoryItem } from "@/lib/api/story";
 import { clearAuthSession, getToken } from "@/lib/auth";
 
 type SeverityFilter = "ALL" | "CRITICAL" | "HIGH" | "WARNING" | "INFO";
@@ -357,6 +359,344 @@ function InspectorSection({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Attack Story Preview
+// ---------------------------------------------------------------------------
+
+const MAX_STORY_ALERTS = 50;
+
+function AttackStoryPreview({
+  selectedAlert,
+  allAlerts,
+}: {
+  selectedAlert: AlertItem;
+  allAlerts: AlertItem[];
+}) {
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState<string | null>(null);
+  const [storyResult, setStoryResult] = useState<StoryPreviewResponse | null>(null);
+
+  // Reset when selected alert changes
+  useEffect(() => {
+    setStoryResult(null);
+    setStoryError(null);
+  }, [selectedAlert.id]);
+
+  const hostname = selectedAlert.hostname;
+
+  async function handlePreview() {
+    if (!hostname) return;
+
+    try {
+      setStoryLoading(true);
+      setStoryError(null);
+      setStoryResult(null);
+
+      const token = getToken();
+      const sameHostAlerts = allAlerts
+        .filter((a) => a.hostname === hostname)
+        .slice(0, MAX_STORY_ALERTS);
+
+      const result = await previewStory(
+        { source_type: "alerts", items: sameHostAlerts as unknown as Record<string, unknown>[] },
+        token ?? undefined,
+      );
+
+      setStoryResult(result);
+    } catch (err) {
+      setStoryError(err instanceof Error ? err.message : "Story preview failed");
+    } finally {
+      setStoryLoading(false);
+    }
+  }
+
+  // -- No hostname → disabled state --
+  if (!hostname) {
+    return (
+      <div
+        className="rounded-xl p-4 text-center text-sm"
+        style={{ background: "var(--surface-1)", color: "var(--muted)" }}
+      >
+        No hostname available — unable to generate an attack story.
+      </div>
+    );
+  }
+
+  // -- Button --
+  const btnClass =
+    "inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
+
+  return (
+    <div className="min-w-0 space-y-4">
+      {/* Generate / Retry button */}
+      {!storyResult && (
+        <button
+          disabled={storyLoading}
+          onClick={handlePreview}
+          className={btnClass}
+          style={{
+            background: "var(--foreground)",
+            color: "var(--background)",
+          }}
+        >
+          {storyLoading ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              Generating story…
+            </>
+          ) : (
+            <>
+              <BookOpen size={14} />
+              Preview Attack Story
+            </>
+          )}
+        </button>
+      )}
+
+      {/* Error state */}
+      {storyError && (
+        <div
+          className="min-w-0 rounded-xl border border-red-200 p-3 text-sm dark:border-red-500/20"
+          style={{ background: "var(--surface-1)" }}
+        >
+          <div className="break-words text-red-600 dark:text-red-400">{storyError}</div>
+          <button
+            onClick={handlePreview}
+            disabled={storyLoading}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+          >
+            <RefreshCw size={12} />
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Success — render stories */}
+      {storyResult && (
+        <div className="min-w-0 space-y-4">
+          {/* Warnings */}
+          {storyResult.warnings.length > 0 && (
+            <div
+              className="min-w-0 rounded-xl border border-amber-200 p-3 text-xs dark:border-amber-500/20"
+              style={{
+                background: "color-mix(in srgb, var(--surface-1) 90%, transparent)",
+              }}
+            >
+              <div className="mb-1 font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                Warnings
+              </div>
+              <ul className="min-w-0 list-inside list-disc space-y-1">
+                {storyResult.warnings.map((w, i) => (
+                  <li key={i} className="min-w-0 break-words text-amber-700 dark:text-amber-300">
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Empty stories */}
+          {storyResult.attack_stories.length === 0 && (
+            <div
+              className="rounded-xl p-4 text-center text-sm"
+              style={{ background: "var(--surface-1)", color: "var(--muted)" }}
+            >
+              No attack story could be generated for this host&apos;s alerts.
+            </div>
+          )}
+
+          {/* Story cards */}
+          {storyResult.attack_stories.map((story) => (
+            <StoryCard key={story.id} story={story} />
+          ))}
+
+          {/* Re-generate button */}
+          <button
+            disabled={storyLoading}
+            onClick={handlePreview}
+            className={btnClass}
+            style={{
+              borderColor: "var(--border-strong)",
+              background: "var(--surface-1)",
+              color: "var(--foreground)",
+            }}
+          >
+            {storyLoading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Regenerating…
+              </>
+            ) : (
+              <>
+                <RefreshCw size={14} />
+                Regenerate Story
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Story Card (single story render)
+// ---------------------------------------------------------------------------
+
+function StoryCard({ story }: { story: AttackStoryItem }) {
+  return (
+    <div
+      className="min-w-0 space-y-3 rounded-xl border p-4"
+      style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+    >
+      {/* Title + severity + risk */}
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span
+            className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(story.severity)}`}
+          >
+            {story.severity}
+          </span>
+          <span className="text-xs font-medium" style={{ color: "var(--muted-strong)" }}>
+            Risk {story.risk_score}/100
+          </span>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            Confidence: {story.confidence}
+          </span>
+        </div>
+        <div className="mt-2 min-w-0 break-words text-sm font-bold">{story.title}</div>
+      </div>
+
+      {/* Executive Summary */}
+      {story.executive_summary && (
+        <div className="min-w-0">
+          <div
+            className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Executive Summary
+          </div>
+          <div
+            className="min-w-0 break-words text-sm leading-relaxed"
+            style={{ color: "var(--muted-strong)" }}
+          >
+            {story.executive_summary}
+          </div>
+        </div>
+      )}
+
+      {/* Key Findings */}
+      {story.key_findings.length > 0 && (
+        <div className="min-w-0">
+          <div
+            className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Key Findings
+          </div>
+          <ul className="min-w-0 list-inside list-disc space-y-1 text-sm" style={{ color: "var(--muted-strong)" }}>
+            {story.key_findings.map((finding, i) => (
+              <li key={i} className="min-w-0 break-words">
+                {finding}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Recommended Actions */}
+      {story.recommended_actions.length > 0 && (
+        <div className="min-w-0">
+          <div
+            className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Recommended Actions
+          </div>
+          <div className="min-w-0 space-y-2">
+            {story.recommended_actions.map((action, i) => (
+              <div
+                key={i}
+                className="min-w-0 rounded-lg border p-2.5"
+                style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold" style={{ color: "var(--foreground)" }}>
+                    {action.title || action.action_type}
+                  </span>
+                  <span
+                    className="inline-flex rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                    style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                  >
+                    {action.priority}
+                  </span>
+                </div>
+                {action.description && (
+                  <div className="mt-1 min-w-0 break-words text-xs" style={{ color: "var(--muted)" }}>
+                    {action.description}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Analyst Questions */}
+      {story.analyst_questions.length > 0 && (
+        <div className="min-w-0">
+          <div
+            className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Analyst Questions
+          </div>
+          <ul className="min-w-0 list-inside list-disc space-y-1 text-sm" style={{ color: "var(--muted-strong)" }}>
+            {story.analyst_questions.map((q, i) => (
+              <li key={i} className="min-w-0 break-words">
+                {q}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Tactics & Techniques tags */}
+      {(story.tactics.length > 0 || story.techniques.length > 0) && (
+        <div className="flex min-w-0 flex-wrap gap-1.5">
+          {story.tactics.map((t) => (
+            <span
+              key={`tactic-${t}`}
+              className="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium"
+              style={{ borderColor: "var(--border)", color: "var(--muted-strong)" }}
+            >
+              {t}
+            </span>
+          ))}
+          {story.techniques.map((t) => (
+            <span
+              key={`technique-${t}`}
+              className="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium"
+              style={{
+                borderColor: "var(--border)",
+                color: "var(--muted)",
+                background: "var(--surface-0)",
+              }}
+            >
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Alert Inspector
+// ---------------------------------------------------------------------------
+
 function AlertInspector({
   selectedAlert,
   detailLoading,
@@ -365,6 +705,7 @@ function AlertInspector({
   setAssignTo,
   noteDraft,
   setNoteDraft,
+  allAlerts,
   refreshSelected,
   runAction,
   onInvestigate,
@@ -376,6 +717,7 @@ function AlertInspector({
   setAssignTo: (value: string) => void;
   noteDraft: string;
   setNoteDraft: (value: string) => void;
+  allAlerts: AlertItem[];
   refreshSelected: () => Promise<void>;
   runAction: (fn: (token: string) => Promise<unknown>) => Promise<void>;
   onInvestigate: (alertId: string) => void;
@@ -481,6 +823,13 @@ function AlertInspector({
               {selectedAlert.command_line || "No command line data"}
             </pre>
           </div>
+        </InspectorSection>
+
+        <InspectorSection title="Attack Story Preview">
+          <AttackStoryPreview
+            selectedAlert={selectedAlert}
+            allAlerts={allAlerts}
+          />
         </InspectorSection>
 
         <InspectorSection title="Assignment">
@@ -983,6 +1332,7 @@ export default function AlertsPage() {
             setAssignTo={setAssignTo}
             noteDraft={noteDraft}
             setNoteDraft={setNoteDraft}
+            allAlerts={alerts}
             refreshSelected={refreshSelected}
             runAction={runAction}
             onInvestigate={(alertId) => router.push(`/investigations?alert_id=${alertId}`)}
