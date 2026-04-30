@@ -172,7 +172,26 @@ def main() -> int:
     else:
         print("⚠️ story_preview_smoke_test.py bulunamadı, atlandı.")
 
-    # 4) Optional response action: unisolate
+    # 4) Story graph preview
+    graph_preview = find_script("story_graph_preview_smoke_test.py")
+    if graph_preview:
+        run_cmd(
+            "Story graph preview smoke",
+            [
+                sys.executable,
+                str(graph_preview),
+                "--base-url",
+                args.base_url,
+                "--username",
+                args.username,
+                "--password",
+                password,
+            ],
+        )
+    else:
+        print("⚠️ story_graph_preview_smoke_test.py bulunamadı, atlandı.")
+
+    # 5) Optional response action: unisolate
     if args.response:
         unisolate = find_script("unisolate_test.py")
         if unisolate:
@@ -180,7 +199,7 @@ def main() -> int:
         else:
             print("⚠️ unisolate_test.py bulunamadı, atlandı.")
 
-    # 5) Optional agent lifecycle
+    # 6) Optional agent lifecycle
     if args.full or args.agent_lifecycle:
         queue = find_script("solidtrace_queue_alert_test.py")
         if queue:
@@ -204,7 +223,7 @@ def main() -> int:
         else:
             print("⚠️ solidtrace_queue_alert_test.py bulunamadı, atlandı.")
 
-    # 6) Optional synthetic generator
+    # 7) Optional synthetic generator
     if args.full or args.synthetic:
         generator = find_script("solidtrace_extended_test_generator.py")
         agent_id = os.getenv("SOLIDTRACE_AGENT_ID", "")
@@ -237,7 +256,7 @@ def main() -> int:
                 required=False,
             )
 
-    # 7) Optional builds/checks
+    # 8) Optional builds/checks
     if not args.skip_build:
         frontend = ROOT / "frontend"
         agent = ROOT / "agent_rust"
