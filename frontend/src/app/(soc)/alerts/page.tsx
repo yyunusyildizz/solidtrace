@@ -34,7 +34,7 @@ import {
   type AlertItem,
 } from "@/lib/api/alerts";
 import { disableUsb, enableUsb, isolateHost, unisolateHost } from "@/lib/api/actions";
-import { previewStory, type StoryPreviewResponse, type AttackStoryItem } from "@/lib/api/story";
+import { previewStory, previewStoryGraph, type StoryPreviewResponse, type StoryGraphPreviewResponse, type StoryGraphItem, type AttackStoryItem } from "@/lib/api/story";
 import { clearAuthSession, getToken } from "@/lib/auth";
 
 type SeverityFilter = "ALL" | "CRITICAL" | "HIGH" | "WARNING" | "INFO";
@@ -694,6 +694,370 @@ function StoryCard({ story }: { story: AttackStoryItem }) {
 }
 
 // ---------------------------------------------------------------------------
+// Story Graph Preview
+// ---------------------------------------------------------------------------
+
+const NODE_TYPE_META: Record<string, { emoji: string; title: string }> = {
+  story:          { emoji: "📖", title: "Story" },
+  host:           { emoji: "🖥️", title: "Hosts" },
+  user:           { emoji: "👤", title: "Users" },
+  tactic:         { emoji: "🎯", title: "Tactics" },
+  technique:      { emoji: "⚙️", title: "Techniques" },
+  action:         { emoji: "✅", title: "Recommended Actions" },
+  source_ip:      { emoji: "📡", title: "Source IPs" },
+  destination_ip: { emoji: "📍", title: "Destination IPs" },
+};
+
+const EDGE_DISPLAY_LIMIT = 20;
+
+function GraphCard({ graph }: { graph: StoryGraphItem }) {
+  const [showAllEdges, setShowAllEdges] = useState(false);
+
+  // Group nodes by node_type
+  const grouped = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; severity: string; risk_score: number }[]>();
+    for (const node of graph.nodes) {
+      const arr = map.get(node.node_type) || [];
+      arr.push({ id: node.id, label: node.label, severity: node.severity, risk_score: node.risk_score });
+      map.set(node.node_type, arr);
+    }
+    return map;
+  }, [graph.nodes]);
+
+  // Build node id -> label map for edge display
+  const nodeLabels = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const n of graph.nodes) {
+      m.set(n.id, n.label || n.node_type);
+    }
+    return m;
+  }, [graph.nodes]);
+
+  const visibleEdges = showAllEdges
+    ? graph.edges
+    : graph.edges.slice(0, EDGE_DISPLAY_LIMIT);
+
+  const groupOrder = ["story", "host", "user", "tactic", "technique", "action", "source_ip", "destination_ip"];
+
+  return (
+    <div
+      className="min-w-0 space-y-3 rounded-xl border p-4"
+      style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+    >
+      {/* Header */}
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span
+            className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(graph.severity)}`}
+          >
+            {graph.severity}
+          </span>
+          <span className="text-xs font-medium" style={{ color: "var(--muted-strong)" }}>
+            Risk {graph.risk_score}/100
+          </span>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            {graph.summary.node_count} nodes · {graph.summary.edge_count} edges
+          </span>
+        </div>
+        <div className="mt-2 min-w-0 break-words text-sm font-bold">{graph.title || "Investigation Graph"}</div>
+      </div>
+
+      {/* Node groups */}
+      <div className="min-w-0 space-y-2">
+        {groupOrder.map((type) => {
+          const nodes = grouped.get(type);
+          if (!nodes || nodes.length === 0) return null;
+          const meta = NODE_TYPE_META[type] || { emoji: "🔹", title: type };
+
+          return (
+            <div key={type} className="min-w-0">
+              <div
+                className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]"
+                style={{ color: "var(--muted)" }}
+              >
+                {meta.emoji} {meta.title}
+              </div>
+              <div className="flex min-w-0 flex-wrap gap-1.5">
+                {nodes.map((node) => (
+                  <span
+                    key={node.id}
+                    className="inline-flex min-w-0 rounded-full border px-2 py-0.5 text-[10px] font-medium"
+                    style={{
+                      borderColor: "var(--border)",
+                      color: "var(--muted-strong)",
+                      background: "var(--surface-0)",
+                    }}
+                    title={`${meta.title}: ${node.label}`}
+                  >
+                    <span className="min-w-0 truncate max-w-[180px]">{node.label || node.id}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Edge list */}
+      {graph.edges.length > 0 && (
+        <div className="min-w-0">
+          <div
+            className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]"
+            style={{ color: "var(--muted)" }}
+          >
+            Edges ({graph.edges.length})
+          </div>
+          <div
+            className="min-w-0 space-y-1 rounded-lg border p-2"
+            style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+          >
+            {visibleEdges.map((edge) => (
+              <div
+                key={edge.id}
+                className="flex min-w-0 flex-wrap items-center gap-1 text-[11px]"
+                style={{ color: "var(--muted-strong)" }}
+              >
+                <span className="min-w-0 break-words font-medium">
+                  {nodeLabels.get(edge.source) || edge.source}
+                </span>
+                <span style={{ color: "var(--muted)" }}>→</span>
+                <span
+                  className="inline-flex rounded border px-1 py-0.5 text-[9px] font-bold uppercase"
+                  style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                >
+                  {edge.edge_type}
+                </span>
+                <span style={{ color: "var(--muted)" }}>→</span>
+                <span className="min-w-0 break-words font-medium">
+                  {nodeLabels.get(edge.target) || edge.target}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {graph.edges.length > EDGE_DISPLAY_LIMIT && (
+            <button
+              onClick={() => setShowAllEdges(!showAllEdges)}
+              className="mt-1 text-[11px] font-medium transition"
+              style={{ color: "var(--muted-strong)" }}
+            >
+              {showAllEdges
+                ? "Show less"
+                : `Show all ${graph.edges.length} edges`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StoryGraphPreview({
+  selectedAlert,
+  allAlerts,
+}: {
+  selectedAlert: AlertItem;
+  allAlerts: AlertItem[];
+}) {
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState<string | null>(null);
+  const [graphResult, setGraphResult] = useState<StoryGraphPreviewResponse | null>(null);
+
+  // Reset when selected alert changes
+  useEffect(() => {
+    setGraphResult(null);
+    setGraphError(null);
+  }, [selectedAlert.id]);
+
+  const hostname = selectedAlert.hostname;
+
+  async function handleGenerateGraph() {
+    if (!hostname) return;
+
+    try {
+      setGraphLoading(true);
+      setGraphError(null);
+      setGraphResult(null);
+
+      const token = getToken();
+      const sameHostAlerts = allAlerts
+        .filter((a) => a.hostname === hostname)
+        .slice(0, MAX_STORY_ALERTS);
+
+      const result = await previewStoryGraph(
+        { source_type: "alerts", items: sameHostAlerts as unknown as Record<string, unknown>[] },
+        token ?? undefined,
+      );
+
+      setGraphResult(result);
+    } catch (err) {
+      setGraphError(err instanceof Error ? err.message : "Graph preview failed");
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+  // -- No hostname → disabled state --
+  if (!hostname) {
+    return (
+      <div
+        className="rounded-xl p-4 text-center text-sm"
+        style={{ background: "var(--surface-1)", color: "var(--muted)" }}
+      >
+        No hostname available — unable to generate a story graph.
+      </div>
+    );
+  }
+
+  const btnClass =
+    "inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
+
+  return (
+    <div className="min-w-0 space-y-4">
+      {/* Generate / Retry button */}
+      {!graphResult && (
+        <button
+          disabled={graphLoading}
+          onClick={handleGenerateGraph}
+          className={btnClass}
+          style={{
+            background: "var(--foreground)",
+            color: "var(--background)",
+          }}
+        >
+          {graphLoading ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              Generating graph…
+            </>
+          ) : (
+            <>
+              <Workflow size={14} />
+              Preview Story Graph
+            </>
+          )}
+        </button>
+      )}
+
+      {/* Error state */}
+      {graphError && (
+        <div
+          className="min-w-0 rounded-xl border border-red-200 p-3 text-sm dark:border-red-500/20"
+          style={{ background: "var(--surface-1)" }}
+        >
+          <div className="break-words text-red-600 dark:text-red-400">{graphError}</div>
+          <button
+            onClick={handleGenerateGraph}
+            disabled={graphLoading}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+          >
+            <RefreshCw size={12} />
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Success — render graphs */}
+      {graphResult && (
+        <div className="min-w-0 space-y-4">
+          {/* Warnings */}
+          {graphResult.warnings.length > 0 && (
+            <div
+              className="min-w-0 rounded-xl border border-amber-200 p-3 text-xs dark:border-amber-500/20"
+              style={{
+                background: "color-mix(in srgb, var(--surface-1) 90%, transparent)",
+              }}
+            >
+              <div className="mb-1 font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                Warnings
+              </div>
+              <ul className="min-w-0 list-inside list-disc space-y-1">
+                {graphResult.warnings.map((w, i) => (
+                  <li key={i} className="min-w-0 break-words text-amber-700 dark:text-amber-300">
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Summary stats */}
+          <div className="grid min-w-0 grid-cols-3 gap-2">
+            <div
+              className="rounded-lg border p-3 text-center"
+              style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+            >
+              <div className="text-lg font-black">{graphResult.summary.graph_count}</div>
+              <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                Graphs
+              </div>
+            </div>
+            <div
+              className="rounded-lg border p-3 text-center"
+              style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+            >
+              <div className="text-lg font-black">{graphResult.summary.total_nodes}</div>
+              <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                Nodes
+              </div>
+            </div>
+            <div
+              className="rounded-lg border p-3 text-center"
+              style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+            >
+              <div className="text-lg font-black">{graphResult.summary.total_edges}</div>
+              <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                Edges
+              </div>
+            </div>
+          </div>
+
+          {/* Empty graphs */}
+          {graphResult.story_graphs.length === 0 && (
+            <div
+              className="rounded-xl p-4 text-center text-sm"
+              style={{ background: "var(--surface-1)", color: "var(--muted)" }}
+            >
+              No story graph could be generated for this host&apos;s alerts.
+            </div>
+          )}
+
+          {/* Graph cards */}
+          {graphResult.story_graphs.map((graph) => (
+            <GraphCard key={graph.id} graph={graph} />
+          ))}
+
+          {/* Regenerate button */}
+          <button
+            disabled={graphLoading}
+            onClick={handleGenerateGraph}
+            className={btnClass}
+            style={{
+              borderColor: "var(--border-strong)",
+              background: "var(--surface-1)",
+              color: "var(--foreground)",
+            }}
+          >
+            {graphLoading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Regenerating…
+              </>
+            ) : (
+              <>
+                <RefreshCw size={14} />
+                Regenerate Graph
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Alert Inspector
 // ---------------------------------------------------------------------------
 
@@ -827,6 +1191,13 @@ function AlertInspector({
 
         <InspectorSection title="Attack Story Preview">
           <AttackStoryPreview
+            selectedAlert={selectedAlert}
+            allAlerts={allAlerts}
+          />
+        </InspectorSection>
+
+        <InspectorSection title="Story Graph Preview">
+          <StoryGraphPreview
             selectedAlert={selectedAlert}
             allAlerts={allAlerts}
           />
