@@ -24,6 +24,38 @@ from .models import GraphEdge, GraphNode, StoryGraph
 logger = logging.getLogger("SolidTrace.StoryGraphBuilder")
 
 
+# ---------------------------------------------------------------------------
+# MITRE ATT&CK — Technique Prefix → Tactic(ler) Mapping
+# ---------------------------------------------------------------------------
+# Technique ID'nin prefix'i (nokta öncesi kısım) → Ait olduğu tactic(ler).
+# Kaynak: MITRE ATT&CK Enterprise Matrix (subset).
+# Bilinmeyen technique'ler için fallback uygulanır.
+# ---------------------------------------------------------------------------
+
+TECHNIQUE_TACTIC_MAP: Dict[str, List[str]] = {
+    "T1003": ["Credential Access"],
+    "T1110": ["Credential Access"],
+    "T1552": ["Credential Access"],
+    "T1059": ["Execution"],
+    "T1047": ["Execution"],
+    "T1053": ["Execution", "Persistence"],
+    "T1021": ["Lateral Movement"],
+    "T1105": ["Command and Control"],
+    "T1078": ["Defense Evasion", "Persistence", "Privilege Escalation", "Initial Access"],
+    "T1562": ["Defense Evasion"],
+    "T1027": ["Defense Evasion"],
+    "T1070": ["Defense Evasion"],
+    "T1547": ["Persistence", "Privilege Escalation"],
+    "T1548": ["Privilege Escalation", "Defense Evasion"],
+    "T1071": ["Command and Control"],
+    "T1082": ["Discovery"],
+    "T1083": ["Discovery"],
+    "T1057": ["Discovery"],
+    "T1041": ["Exfiltration"],
+    "T1486": ["Impact"],
+}
+
+
 class StoryGraphBuilder:
     """
     AttackStory'den StoryGraph üretir.
@@ -165,14 +197,28 @@ class StoryGraphBuilder:
                 label=f"maps to {technique}",
             )
 
-            # Tactic → Technique ilişkisi
-            for tactic_node in tactic_nodes:
-                self._get_or_create_edge(
-                    source=tactic_node.id,
-                    target=node.id,
-                    edge_type="maps_to",
-                    label=f"{tactic_node.label} → {technique}",
-                )
+            # Tactic → Technique ilişkisi (MITRE mapping ile)
+            mapped_tactics = self._resolve_tactics_for_technique(technique)
+
+            if mapped_tactics:
+                # Mapping bilinen: sadece ilgili tactic node'larla bağla
+                for tactic_node in tactic_nodes:
+                    if tactic_node.label in mapped_tactics:
+                        self._get_or_create_edge(
+                            source=tactic_node.id,
+                            target=node.id,
+                            edge_type="maps_to",
+                            label=f"{tactic_node.label} → {technique}",
+                        )
+            else:
+                # Mapping bilinmeyen: fallback — tüm tactic'lerle bağla
+                for tactic_node in tactic_nodes:
+                    self._get_or_create_edge(
+                        source=tactic_node.id,
+                        target=node.id,
+                        edge_type="maps_to",
+                        label=f"{tactic_node.label} → {technique}",
+                    )
 
         # 8. Recommended Action node'ları
         for action in story.recommended_actions:
@@ -297,6 +343,17 @@ class StoryGraphBuilder:
         """Registry'den host node arar."""
         key = f"host:{hostname}"
         return self._node_registry.get(key)
+
+    @staticmethod
+    def _resolve_tactics_for_technique(technique: str) -> List[str]:
+        """
+        Technique ID'den ait olduğu tactic isimlerini döndürür.
+
+        Sub-technique (T1003.001) ise prefix'i (T1003) kullanır.
+        Bilinmiyorsa boş liste döner → fallback davranışı tetiklenir.
+        """
+        prefix = technique.split(".")[0]
+        return TECHNIQUE_TACTIC_MAP.get(prefix, [])
 
     @staticmethod
     def _build_summary(nodes: List[GraphNode], edges: List[GraphEdge]) -> Dict:

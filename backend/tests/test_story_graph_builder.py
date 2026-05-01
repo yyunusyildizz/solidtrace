@@ -541,3 +541,154 @@ class TestPackageImports:
         assert "recommends" in EDGE_TYPES
         assert "maps_to" in EDGE_TYPES
         assert len(EDGE_TYPES) == 6
+
+
+# ---------------------------------------------------------------------------
+# 10. MITRE Tactic → Technique mapping doğru çalışır
+# ---------------------------------------------------------------------------
+
+class TestMitreTacticTechniqueMapping:
+    """MITRE mapping ile doğru tactic → technique edge üretimini test eder."""
+
+    def setup_method(self):
+        self.builder = StoryGraphBuilder()
+
+    def _build_mixed_story(self):
+        """Execution + Defense Evasion tactics, T1059.001 + T1562.001 techniques."""
+        return AttackStory(
+            title="Mixed Tactic Story",
+            severity="HIGH",
+            risk_score=80,
+            tactics=["Execution", "Defense Evasion"],
+            techniques=["T1059.001", "T1562.001"],
+        )
+
+    def _get_edges_between(self, graph, source_label: str, target_label: str):
+        """source_label → target_label arasındaki tüm edge'leri döndürür."""
+        node_map = {n.label: n.id for n in graph.nodes}
+        src_id = node_map.get(source_label)
+        tgt_id = node_map.get(target_label)
+        if not src_id or not tgt_id:
+            return []
+        return [e for e in graph.edges if e.source == src_id and e.target == tgt_id]
+
+    # -- Doğru mapping testleri --
+
+    def test_correct_mapping_execution_t1059(self):
+        """Execution → T1059.001 edge olmalı."""
+        graph = self.builder.build(self._build_mixed_story())
+        edges = self._get_edges_between(graph, "Execution", "T1059.001")
+        assert len(edges) == 1
+        assert edges[0].edge_type == "maps_to"
+
+    def test_correct_mapping_defense_evasion_t1562(self):
+        """Defense Evasion → T1562.001 edge olmalı."""
+        graph = self.builder.build(self._build_mixed_story())
+        edges = self._get_edges_between(graph, "Defense Evasion", "T1562.001")
+        assert len(edges) == 1
+        assert edges[0].edge_type == "maps_to"
+
+    # -- Çapraz mapping olmamalı --
+
+    def test_no_cross_mapping_execution_t1562(self):
+        """Execution → T1562.001 edge OLMAMALI."""
+        graph = self.builder.build(self._build_mixed_story())
+        edges = self._get_edges_between(graph, "Execution", "T1562.001")
+        assert len(edges) == 0
+
+    def test_no_cross_mapping_defense_evasion_t1059(self):
+        """Defense Evasion → T1059.001 edge OLMAMALI."""
+        graph = self.builder.build(self._build_mixed_story())
+        edges = self._get_edges_between(graph, "Defense Evasion", "T1059.001")
+        assert len(edges) == 0
+
+    # -- Credential Access mapping --
+
+    def test_credential_access_t1003_mapping(self):
+        """Credential Access → T1003.001 edge olmalı."""
+        story = AttackStory(
+            title="Cred Test",
+            severity="HIGH",
+            risk_score=90,
+            tactics=["Credential Access", "Execution"],
+            techniques=["T1003.001", "T1059.003"],
+        )
+        graph = self.builder.build(story)
+
+        # Doğru bağlantılar
+        assert len(self._get_edges_between(graph, "Credential Access", "T1003.001")) == 1
+        assert len(self._get_edges_between(graph, "Execution", "T1059.003")) == 1
+
+        # Çapraz bağlantılar olmamalı
+        assert len(self._get_edges_between(graph, "Execution", "T1003.001")) == 0
+        assert len(self._get_edges_between(graph, "Credential Access", "T1059.003")) == 0
+
+    # -- Bilinmeyen technique fallback --
+
+    def test_unknown_technique_fallback(self):
+        """Bilinmeyen technique → tüm tactic'lerle bağlanır (fallback)."""
+        story = AttackStory(
+            title="Unknown Tech",
+            severity="HIGH",
+            risk_score=50,
+            tactics=["Execution", "Discovery"],
+            techniques=["T9999.001"],
+        )
+        graph = self.builder.build(story)
+
+        # Bilinmeyen technique: her iki tactic'le de bağlı olmalı (fallback)
+        assert len(self._get_edges_between(graph, "Execution", "T9999.001")) == 1
+        assert len(self._get_edges_between(graph, "Discovery", "T9999.001")) == 1
+
+    # -- story → tactic/technique edge'leri korunuyor --
+
+    def test_story_to_tactic_edges_preserved(self):
+        """story → tactic maps_to edge'leri korunuyor."""
+        graph = self.builder.build(self._build_mixed_story())
+        story_node = [n for n in graph.nodes if n.node_type == "story"][0]
+        tactic_ids = {n.id for n in graph.nodes if n.node_type == "tactic"}
+        story_to_tactic = [
+            e for e in graph.edges
+            if e.source == story_node.id and e.target in tactic_ids and e.edge_type == "maps_to"
+        ]
+        assert len(story_to_tactic) == 2  # Execution, Defense Evasion
+
+    def test_story_to_technique_edges_preserved(self):
+        """story → technique maps_to edge'leri korunuyor."""
+        graph = self.builder.build(self._build_mixed_story())
+        story_node = [n for n in graph.nodes if n.node_type == "story"][0]
+        technique_ids = {n.id for n in graph.nodes if n.node_type == "technique"}
+        story_to_technique = [
+            e for e in graph.edges
+            if e.source == story_node.id and e.target in technique_ids and e.edge_type == "maps_to"
+        ]
+        assert len(story_to_technique) == 2  # T1059.001, T1562.001
+
+    # -- Duplicate edge kontrolü --
+
+    def test_no_duplicate_edges(self):
+        """Duplicate edge oluşmuyor."""
+        graph = self.builder.build(self._build_mixed_story())
+        edge_keys = [f"{e.source}:{e.target}:{e.edge_type}" for e in graph.edges]
+        assert len(edge_keys) == len(set(edge_keys))
+
+    # -- Multi-tactic technique --
+
+    def test_multi_tactic_technique_t1078(self):
+        """T1078 birden fazla tactic'e ait — story'de bulunan tactic'lerle edge var."""
+        story = AttackStory(
+            title="Multi Tactic",
+            severity="HIGH",
+            risk_score=70,
+            tactics=["Defense Evasion", "Persistence", "Execution"],
+            techniques=["T1078"],
+        )
+        graph = self.builder.build(story)
+
+        # T1078 → Defense Evasion ve Persistence ile bağlı olmalı
+        assert len(self._get_edges_between(graph, "Defense Evasion", "T1078")) == 1
+        assert len(self._get_edges_between(graph, "Persistence", "T1078")) == 1
+
+        # T1078 mapping'de Execution yok → edge olmamalı
+        assert len(self._get_edges_between(graph, "Execution", "T1078")) == 0
+
