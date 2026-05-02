@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -34,7 +35,9 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 logger = logging.getLogger("SolidTrace.DB")
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./solidtrace.db")
+DEFAULT_SQLITE_DB_PATH = Path(__file__).resolve().parents[2] / "solidtrace.db"
+DEFAULT_DATABASE_URL = f"sqlite:///{DEFAULT_SQLITE_DB_PATH.as_posix()}"
+DATABASE_URL: str = os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 try:
     engine = create_engine(
