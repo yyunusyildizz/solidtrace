@@ -36,7 +36,7 @@ import {
 } from "@/lib/api/alerts";
 import { disableUsb, enableUsb, isolateHost, unisolateHost } from "@/lib/api/actions";
 import { previewStory, previewStoryGraph, type StoryPreviewResponse, type StoryGraphPreviewResponse, type StoryGraphItem, type AttackStoryItem } from "@/lib/api/story";
-import { previewCaseDraft, type CasePreviewResponse, type CaseDraftItem } from "@/lib/api/case-preview";
+import { previewCaseDraft, createCaseFromPreview, type CasePreviewRequest, type CasePreviewResponse, type CaseFromPreviewResponse, type CaseDraftItem } from "@/lib/api/case-preview";
 import { clearAuthSession, getToken } from "@/lib/auth";
 
 type SeverityFilter = "ALL" | "CRITICAL" | "HIGH" | "WARNING" | "INFO";
@@ -1370,20 +1370,38 @@ function CasePreviewPanel({
   selectedAlert: AlertItem;
   allAlerts: AlertItem[];
 }) {
+  // -- Preview state --
   const [caseLoading, setCaseLoading] = useState(false);
   const [caseError, setCaseError] = useState<string | null>(null);
   const [caseResult, setCaseResult] = useState<CasePreviewResponse | null>(null);
 
-  // Reset when selected alert changes
+  // -- Create state --
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [createResult, setCreateResult] = useState<CaseFromPreviewResponse | null>(null);
+  const [lastPayload, setLastPayload] = useState<CasePreviewRequest | null>(null);
+
+  // Reset ALL state when selected alert changes
   useEffect(() => {
     setCaseResult(null);
     setCaseError(null);
+    setCreateResult(null);
+    setCreateError(null);
+    setCreateLoading(false);
+    setLastPayload(null);
   }, [selectedAlert.id]);
 
   const hostname = selectedAlert.hostname;
 
+  // -- Preview handler --
   async function handleCasePreview() {
     if (!hostname) return;
+
+    // Reset create state on regenerate
+    setCreateResult(null);
+    setCreateError(null);
+    setCreateLoading(false);
+    setLastPayload(null);
 
     try {
       setCaseLoading(true);
@@ -1399,21 +1417,41 @@ function CasePreviewPanel({
         ? sameHostAlerts
         : [selectedAlert];
 
-      const result = await previewCaseDraft(
-        {
-          source_type: "alerts",
-          items: items as unknown as Record<string, unknown>[],
-          include_graph: true,
-          consolidate: true,
-        },
-        token ?? undefined,
-      );
+      const payload: CasePreviewRequest = {
+        source_type: "alerts",
+        items: items as unknown as Record<string, unknown>[],
+        include_graph: true,
+        consolidate: true,
+      };
+
+      const result = await previewCaseDraft(payload, token ?? undefined);
 
       setCaseResult(result);
+      setLastPayload(payload);
     } catch (err) {
       setCaseError(err instanceof Error ? err.message : "Case preview failed");
     } finally {
       setCaseLoading(false);
+    }
+  }
+
+  // -- Create Case handler --
+  async function handleCreateCase() {
+    if (!lastPayload) return;
+
+    try {
+      setCreateLoading(true);
+      setCreateError(null);
+      setCreateResult(null);
+
+      const token = getToken();
+      const result = await createCaseFromPreview(lastPayload, token ?? undefined);
+
+      setCreateResult(result);
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "Case creation failed");
+    } finally {
+      setCreateLoading(false);
     }
   }
 
@@ -1431,6 +1469,8 @@ function CasePreviewPanel({
 
   const btnClass =
     "inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
+
+  const firstCase = createResult?.created_cases?.[0] ?? null;
 
   return (
     <div className="min-w-0 space-y-4">
@@ -1514,6 +1554,137 @@ function CasePreviewPanel({
           {caseResult.case_drafts.map((cd) => (
             <CaseDraftCard key={cd.id} draft={cd} />
           ))}
+
+          {/* ── Create Case Section ── */}
+          {caseResult.case_drafts.length > 0 && (
+            <>
+              {/* Create Case success banner */}
+              {createResult && firstCase && (
+                <div
+                  className="min-w-0 rounded-xl border border-emerald-200 p-4 dark:border-emerald-500/20"
+                  style={{
+                    background: "color-mix(in srgb, var(--surface-1) 92%, #10b981 8%)",
+                  }}
+                >
+                  <div className="mb-2 flex items-center gap-2 text-sm font-bold text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 size={16} />
+                    Case Created
+                  </div>
+
+                  <div className="min-w-0 space-y-2">
+                    {/* Title + severity + status */}
+                    <div className="min-w-0">
+                      <div className="min-w-0 break-words text-sm font-semibold" style={{ color: "var(--foreground)" }}>
+                        {firstCase.title}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${severityTone(firstCase.severity)}`}
+                        >
+                          {firstCase.severity}
+                        </span>
+                        <span
+                          className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${statusTone(firstCase.status)}`}
+                        >
+                          {firstCase.status}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <div
+                        className="rounded-lg border p-2 text-center"
+                        style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+                      >
+                        <div className="text-sm font-black">{createResult.summary.total_created_cases}</div>
+                        <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                          Created Cases
+                        </div>
+                      </div>
+                      <div
+                        className="rounded-lg border p-2 text-center"
+                        style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+                      >
+                        <div className="text-sm font-black">{createResult.linked_alert_count}</div>
+                        <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                          Linked Alerts
+                        </div>
+                      </div>
+                      <div
+                        className="rounded-lg border p-2 text-center"
+                        style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+                      >
+                        <div className="text-sm font-black">{createResult.summary.max_risk_score}</div>
+                        <div className="text-[9px] font-bold uppercase tracking-wider" style={{ color: "var(--muted)" }}>
+                          Max Risk
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Case ID */}
+                    <div className="text-xs" style={{ color: "var(--muted)" }}>
+                      Case ID:{" "}
+                      <span className="font-mono font-medium" style={{ color: "var(--muted-strong)" }}>
+                        {firstCase.id}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Create Case error */}
+              {createError && (
+                <div
+                  className="min-w-0 rounded-xl border border-red-200 p-3 text-sm dark:border-red-500/20"
+                  style={{ background: "var(--surface-1)" }}
+                >
+                  <div className="break-words text-red-600 dark:text-red-400">{createError}</div>
+                  <button
+                    onClick={handleCreateCase}
+                    disabled={createLoading}
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+                  >
+                    <RefreshCw size={12} />
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {/* Create Case button */}
+              <button
+                disabled={createLoading || !!createResult}
+                onClick={handleCreateCase}
+                className={btnClass}
+                style={{
+                  background: createResult
+                    ? "color-mix(in srgb, var(--surface-1) 90%, #10b981 10%)"
+                    : "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                  color: createResult ? "#10b981" : "#fff",
+                  borderColor: createResult ? "#10b98133" : "transparent",
+                  border: createResult ? "1px solid #10b98133" : "none",
+                }}
+              >
+                {createLoading ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    Creating case\u2026
+                  </>
+                ) : createResult ? (
+                  <>
+                    <CheckCircle2 size={14} />
+                    Case Created \u2713
+                  </>
+                ) : (
+                  <>
+                    <Briefcase size={14} />
+                    Create Case
+                  </>
+                )}
+              </button>
+            </>
+          )}
 
           {/* Regenerate button */}
           <button

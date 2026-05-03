@@ -96,7 +96,7 @@ export interface CasePreviewResponse {
 }
 
 // ---------------------------------------------------------------------------
-// API call
+// API call — Preview
 // ---------------------------------------------------------------------------
 
 export async function previewCaseDraft(
@@ -104,4 +104,45 @@ export async function previewCaseDraft(
   token?: string,
 ): Promise<CasePreviewResponse> {
   return apiPost<CasePreviewResponse>("/api/cases/preview", request, token);
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/cases/from-preview — Create Case from Preview
+// ---------------------------------------------------------------------------
+
+export interface CreatedCaseItem {
+  id: string;
+  tenant_id?: string | null;
+  title: string;
+  description?: string | null;
+  status: string;
+  severity: string;
+  owner?: string | null;
+  created_at: string;
+  updated_at: string;
+  related_alert_count?: number;
+}
+
+export interface CaseFromPreviewSummary {
+  total_items: number;
+  total_case_drafts: number;
+  total_created_cases: number;
+  total_linked_alerts: number;
+  highest_severity: string;
+  max_risk_score: number;
+}
+
+export interface CaseFromPreviewResponse {
+  created_cases: CreatedCaseItem[];
+  case_drafts: CaseDraftItem[];
+  linked_alert_count: number;
+  summary: CaseFromPreviewSummary;
+  warnings: string[];
+}
+
+export async function createCaseFromPreview(
+  request: CasePreviewRequest,
+  token?: string,
+): Promise<CaseFromPreviewResponse> {
+  return apiPost<CaseFromPreviewResponse>("/api/cases/from-preview", request, token);
 }
