@@ -6,6 +6,7 @@ import {
   Activity,
   AlertTriangle,
   BookOpen,
+  Briefcase,
   CheckCircle2,
   Clock3,
   Loader2,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/api/alerts";
 import { disableUsb, enableUsb, isolateHost, unisolateHost } from "@/lib/api/actions";
 import { previewStory, previewStoryGraph, type StoryPreviewResponse, type StoryGraphPreviewResponse, type StoryGraphItem, type AttackStoryItem } from "@/lib/api/story";
+import { previewCaseDraft, type CasePreviewResponse, type CaseDraftItem } from "@/lib/api/case-preview";
 import { clearAuthSession, getToken } from "@/lib/auth";
 
 type SeverityFilter = "ALL" | "CRITICAL" | "HIGH" | "WARNING" | "INFO";
@@ -1058,6 +1060,445 @@ function StoryGraphPreview({
 }
 
 // ---------------------------------------------------------------------------
+// Case Preview
+// ---------------------------------------------------------------------------
+
+const CASE_EVIDENCE_LIMIT = 8;
+const CASE_TIMELINE_LIMIT = 8;
+
+function priorityTone(priority?: string | null) {
+  const value = (priority || "low").toLowerCase();
+  if (value === "immediate") return "border-red-200 bg-red-50 text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-400";
+  if (value === "high") return "border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-500/20 dark:bg-orange-500/10 dark:text-orange-400";
+  if (value === "medium") return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-400";
+  return "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-400";
+}
+
+function CaseDraftCard({ draft }: { draft: CaseDraftItem }) {
+  const evidence = draft.evidence_items || [];
+  const timeline = draft.timeline_items || [];
+  const actions = draft.recommended_actions || [];
+  const questions = draft.analyst_questions || [];
+  const tags = draft.tags || [];
+  const hosts = draft.affected_hosts || [];
+  const users = draft.affected_users || [];
+  const tactics = draft.tactics || [];
+  const techniques = draft.techniques || [];
+  const alertIds = draft.related_alert_ids || [];
+
+  const visibleEvidence = evidence.slice(0, CASE_EVIDENCE_LIMIT);
+  const remainingEvidence = evidence.length - CASE_EVIDENCE_LIMIT;
+  const visibleTimeline = timeline.slice(0, CASE_TIMELINE_LIMIT);
+  const remainingTimeline = timeline.length - CASE_TIMELINE_LIMIT;
+
+  const evidenceEmoji: Record<string, string> = {
+    alert: "\uD83D\uDD14",
+    story_timeline: "\uD83D\uDCCB",
+    graph_summary: "\uD83D\uDDFA\uFE0F",
+    mitre_mapping: "\uD83C\uDFAF",
+  };
+
+  return (
+    <div
+      className="min-w-0 space-y-3 rounded-xl border p-4"
+      style={{ borderColor: "var(--border)", background: "var(--surface-1)" }}
+    >
+      {/* Header: severity + priority + risk + confidence */}
+      <div className="min-w-0">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span
+            className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${severityTone(draft.severity)}`}
+          >
+            {draft.severity || "INFO"}
+          </span>
+          <span
+            className={`inline-flex rounded-full border px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${priorityTone(draft.priority)}`}
+          >
+            {draft.priority || "low"}
+          </span>
+          <span className="text-xs font-medium" style={{ color: "var(--muted-strong)" }}>
+            Risk {draft.risk_score ?? 0}/100
+          </span>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            Confidence: {draft.confidence || "medium"}
+          </span>
+        </div>
+        <div className="mt-2 min-w-0 break-words text-sm font-bold">{draft.title || "Case Draft"}</div>
+      </div>
+
+      {/* Summary */}
+      {draft.summary && (
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+            Summary
+          </div>
+          <div className="min-w-0 break-words text-sm leading-relaxed" style={{ color: "var(--muted-strong)" }}>
+            {draft.summary}
+          </div>
+        </div>
+      )}
+
+      {/* Tags */}
+      {tags.length > 0 && (
+        <div className="flex min-w-0 flex-wrap gap-1.5">
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium"
+              style={{ borderColor: "var(--border)", color: "var(--muted-strong)", background: "var(--surface-0)" }}
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Affected Hosts & Users */}
+      {(hosts.length > 0 || users.length > 0) && (
+        <div className="grid min-w-0 grid-cols-2 gap-3">
+          {hosts.length > 0 && (
+            <div className="min-w-0">
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+                Affected Hosts
+              </div>
+              <div className="min-w-0 break-words text-xs" style={{ color: "var(--muted-strong)" }}>
+                {hosts.join(", ")}
+              </div>
+            </div>
+          )}
+          {users.length > 0 && (
+            <div className="min-w-0">
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+                Affected Users
+              </div>
+              <div className="min-w-0 break-words text-xs" style={{ color: "var(--muted-strong)" }}>
+                {users.join(", ")}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tactics & Techniques */}
+      {(tactics.length > 0 || techniques.length > 0) && (
+        <div className="flex min-w-0 flex-wrap gap-1.5">
+          {tactics.map((t) => (
+            <span
+              key={`tactic-${t}`}
+              className="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium"
+              style={{ borderColor: "var(--border)", color: "var(--muted-strong)" }}
+            >
+              {t}
+            </span>
+          ))}
+          {techniques.map((t) => (
+            <span
+              key={`technique-${t}`}
+              className="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-medium"
+              style={{ borderColor: "var(--border)", color: "var(--muted)", background: "var(--surface-0)" }}
+            >
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Related Alert IDs */}
+      {alertIds.length > 0 && (
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+            Related Alerts ({alertIds.length})
+          </div>
+          <div className="min-w-0 break-words text-xs" style={{ color: "var(--muted-strong)" }}>
+            {alertIds.slice(0, 5).join(", ")}{alertIds.length > 5 ? ` (+${alertIds.length - 5} more)` : ""}
+          </div>
+        </div>
+      )}
+
+      {/* Evidence Items */}
+      {evidence.length > 0 && (
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+            Evidence ({evidence.length})
+          </div>
+          <ul className="min-w-0 list-inside list-disc space-y-1 text-xs" style={{ color: "var(--muted-strong)" }}>
+            {visibleEvidence.map((ei, i) => (
+              <li key={i} className="min-w-0 break-words">
+                {evidenceEmoji[ei.evidence_type] || "\uD83D\uDD39"} {ei.description || ei.evidence_type}
+              </li>
+            ))}
+          </ul>
+          {remainingEvidence > 0 && (
+            <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+              +{remainingEvidence} more
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Timeline Items */}
+      {timeline.length > 0 && (
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+            Timeline ({timeline.length})
+          </div>
+          <div className="min-w-0 space-y-1">
+            {visibleTimeline.map((ti, i) => (
+              <div key={i} className="flex min-w-0 gap-2 text-xs" style={{ color: "var(--muted-strong)" }}>
+                <span className="shrink-0 font-mono text-[10px]" style={{ color: "var(--muted)" }}>
+                  {ti.order ?? i + 1}.
+                </span>
+                {ti.timestamp && (
+                  <span className="shrink-0 text-[10px]" style={{ color: "var(--muted)" }}>
+                    {ti.timestamp}
+                  </span>
+                )}
+                <span className="min-w-0 break-words">{ti.description || "Event"}</span>
+              </div>
+            ))}
+          </div>
+          {remainingTimeline > 0 && (
+            <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+              +{remainingTimeline} more
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Recommended Actions */}
+      {actions.length > 0 && (
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+            Recommended Actions
+          </div>
+          <div className="min-w-0 space-y-2">
+            {actions.map((action, i) => (
+              <div
+                key={i}
+                className="min-w-0 rounded-lg border p-2.5"
+                style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold" style={{ color: "var(--foreground)" }}>
+                    {action.title || action.action_type}
+                  </span>
+                  <span
+                    className="inline-flex rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase"
+                    style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                  >
+                    {action.priority}
+                  </span>
+                </div>
+                {action.description && (
+                  <div className="mt-1 min-w-0 break-words text-xs" style={{ color: "var(--muted)" }}>
+                    {action.description}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Analyst Questions */}
+      {questions.length > 0 && (
+        <div className="min-w-0">
+          <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
+            Analyst Questions
+          </div>
+          <ul className="min-w-0 list-inside list-disc space-y-1 text-sm" style={{ color: "var(--muted-strong)" }}>
+            {questions.map((q, i) => (
+              <li key={i} className="min-w-0 break-words">{q}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CasePreviewPanel({
+  selectedAlert,
+  allAlerts,
+}: {
+  selectedAlert: AlertItem;
+  allAlerts: AlertItem[];
+}) {
+  const [caseLoading, setCaseLoading] = useState(false);
+  const [caseError, setCaseError] = useState<string | null>(null);
+  const [caseResult, setCaseResult] = useState<CasePreviewResponse | null>(null);
+
+  // Reset when selected alert changes
+  useEffect(() => {
+    setCaseResult(null);
+    setCaseError(null);
+  }, [selectedAlert.id]);
+
+  const hostname = selectedAlert.hostname;
+
+  async function handleCasePreview() {
+    if (!hostname) return;
+
+    try {
+      setCaseLoading(true);
+      setCaseError(null);
+      setCaseResult(null);
+
+      const token = getToken();
+      const sameHostAlerts = allAlerts
+        .filter((a) => a.hostname === hostname)
+        .slice(0, MAX_STORY_ALERTS);
+
+      const items = sameHostAlerts.length > 0
+        ? sameHostAlerts
+        : [selectedAlert];
+
+      const result = await previewCaseDraft(
+        {
+          source_type: "alerts",
+          items: items as unknown as Record<string, unknown>[],
+          include_graph: true,
+          consolidate: true,
+        },
+        token ?? undefined,
+      );
+
+      setCaseResult(result);
+    } catch (err) {
+      setCaseError(err instanceof Error ? err.message : "Case preview failed");
+    } finally {
+      setCaseLoading(false);
+    }
+  }
+
+  // No hostname → disabled
+  if (!hostname) {
+    return (
+      <div
+        className="rounded-xl p-4 text-center text-sm"
+        style={{ background: "var(--surface-1)", color: "var(--muted)" }}
+      >
+        No hostname available — unable to generate a case draft.
+      </div>
+    );
+  }
+
+  const btnClass =
+    "inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60";
+
+  return (
+    <div className="min-w-0 space-y-4">
+      {/* Generate / Retry button */}
+      {!caseResult && (
+        <button
+          disabled={caseLoading}
+          onClick={handleCasePreview}
+          className={btnClass}
+          style={{
+            background: "var(--foreground)",
+            color: "var(--background)",
+          }}
+        >
+          {caseLoading ? (
+            <>
+              <Loader2 size={14} className="animate-spin" />
+              Generating case draft\u2026
+            </>
+          ) : (
+            <>
+              <Briefcase size={14} />
+              Preview Case Draft
+            </>
+          )}
+        </button>
+      )}
+
+      {/* Error state */}
+      {caseError && (
+        <div
+          className="min-w-0 rounded-xl border border-red-200 p-3 text-sm dark:border-red-500/20"
+          style={{ background: "var(--surface-1)" }}
+        >
+          <div className="break-words text-red-600 dark:text-red-400">{caseError}</div>
+          <button
+            onClick={handleCasePreview}
+            disabled={caseLoading}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ borderColor: "var(--border)", background: "var(--surface-0)" }}
+          >
+            <RefreshCw size={12} />
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Success */}
+      {caseResult && (
+        <div className="min-w-0 space-y-4">
+          {/* Warnings */}
+          {caseResult.warnings.length > 0 && (
+            <div
+              className="min-w-0 rounded-xl border border-amber-200 p-3 text-xs dark:border-amber-500/20"
+              style={{ background: "color-mix(in srgb, var(--surface-1) 90%, transparent)" }}
+            >
+              <div className="mb-1 font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+                Warnings
+              </div>
+              <ul className="min-w-0 list-inside list-disc space-y-1">
+                {caseResult.warnings.map((w, i) => (
+                  <li key={i} className="min-w-0 break-words text-amber-700 dark:text-amber-300">
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Empty case drafts */}
+          {caseResult.case_drafts.length === 0 && (
+            <div
+              className="rounded-xl p-4 text-center text-sm"
+              style={{ background: "var(--surface-1)", color: "var(--muted)" }}
+            >
+              No case draft could be generated for this host&apos;s alerts.
+            </div>
+          )}
+
+          {/* Case draft cards */}
+          {caseResult.case_drafts.map((cd) => (
+            <CaseDraftCard key={cd.id} draft={cd} />
+          ))}
+
+          {/* Regenerate button */}
+          <button
+            disabled={caseLoading}
+            onClick={handleCasePreview}
+            className={btnClass}
+            style={{
+              borderColor: "var(--border-strong)",
+              background: "var(--surface-1)",
+              color: "var(--foreground)",
+            }}
+          >
+            {caseLoading ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                Regenerating\u2026
+              </>
+            ) : (
+              <>
+                <RefreshCw size={14} />
+                Regenerate Case Draft
+              </>
+            )}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Alert Inspector
 // ---------------------------------------------------------------------------
 
@@ -1198,6 +1639,13 @@ function AlertInspector({
 
         <InspectorSection title="Story Graph Preview">
           <StoryGraphPreview
+            selectedAlert={selectedAlert}
+            allAlerts={allAlerts}
+          />
+        </InspectorSection>
+
+        <InspectorSection title="Case Preview">
+          <CasePreviewPanel
             selectedAlert={selectedAlert}
             allAlerts={allAlerts}
           />
