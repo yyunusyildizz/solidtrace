@@ -130,6 +130,7 @@ class StoryBuilder:
                 "correlation_rule_title": group.title,
                 "event_count": len(group.event_ids),
                 "alert_count": len(group.alert_ids),
+                "alert_ids": list(group.alert_ids),
             },
         )
 

@@ -178,6 +178,17 @@ class TestCasePreviewAlerts:
         assert len(data["case_drafts"]) >= 1
         assert len(data["attack_stories"]) >= 1
 
+    def test_alert_source_has_related_alert_ids(self, client):
+        """source_type=alerts → case_drafts[0].related_alert_ids boş değil."""
+        resp = client.post("/api/cases/preview", json={
+            "source_type": "alerts",
+            "items": _credential_chain_alerts(),
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        cd = data["case_drafts"][0]
+        assert len(cd.get("related_alert_ids", [])) >= 1
+
 
 # ---------------------------------------------------------------------------
 # 4. Consolidation
