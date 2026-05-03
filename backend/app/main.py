@@ -119,6 +119,7 @@ def safe_include_router(import_path: str, attr_name: str = "router", label: str 
 safe_include_router("app.api.routes_auth", label="auth")
 safe_include_router("app.api.routes_alerts", label="alerts")
 safe_include_router("app.api.routes_investigations", label="investigations")
+safe_include_router("app.api.routes_case_preview", label="case_preview")
 safe_include_router("app.api.routes_cases", label="cases")
 safe_include_router("app.api.routes_actions", label="actions")
 safe_include_router("app.api.routes_admin", label="admin")
