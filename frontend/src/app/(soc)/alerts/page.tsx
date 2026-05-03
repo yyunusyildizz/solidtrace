@@ -1065,6 +1065,9 @@ function StoryGraphPreview({
 
 const CASE_EVIDENCE_LIMIT = 8;
 const CASE_TIMELINE_LIMIT = 8;
+const CASE_QUESTIONS_LIMIT = 8;
+const CASE_ALERT_ID_LIMIT = 5;
+const CASE_ALERT_ID_DISPLAY_LEN = 12;
 
 function priorityTone(priority?: string | null) {
   const value = (priority || "low").toLowerCase();
@@ -1209,8 +1212,22 @@ function CaseDraftCard({ draft }: { draft: CaseDraftItem }) {
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
             Related Alerts ({alertIds.length})
           </div>
-          <div className="min-w-0 break-words text-xs" style={{ color: "var(--muted-strong)" }}>
-            {alertIds.slice(0, 5).join(", ")}{alertIds.length > 5 ? ` (+${alertIds.length - 5} more)` : ""}
+          <div className="flex min-w-0 flex-wrap gap-1.5">
+            {alertIds.slice(0, CASE_ALERT_ID_LIMIT).map((aid) => (
+              <span
+                key={aid}
+                title={aid}
+                className="inline-flex rounded-full border px-2 py-0.5 text-[10px] font-mono font-medium"
+                style={{ borderColor: "var(--border)", color: "var(--muted-strong)", background: "var(--surface-0)" }}
+              >
+                {aid.length > CASE_ALERT_ID_DISPLAY_LEN ? aid.slice(0, CASE_ALERT_ID_DISPLAY_LEN) + "\u2026" : aid}
+              </span>
+            ))}
+            {alertIds.length > CASE_ALERT_ID_LIMIT && (
+              <span className="inline-flex items-center text-[10px]" style={{ color: "var(--muted)" }}>
+                +{alertIds.length - CASE_ALERT_ID_LIMIT} more
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -1221,16 +1238,27 @@ function CaseDraftCard({ draft }: { draft: CaseDraftItem }) {
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
             Evidence ({evidence.length})
           </div>
-          <ul className="min-w-0 list-inside list-disc space-y-1 text-xs" style={{ color: "var(--muted-strong)" }}>
-            {visibleEvidence.map((ei, i) => (
-              <li key={i} className="min-w-0 break-words">
-                {evidenceEmoji[ei.evidence_type] || "\uD83D\uDD39"} {ei.description || ei.evidence_type}
-              </li>
-            ))}
-          </ul>
+          <div className="min-w-0 space-y-1.5">
+            {visibleEvidence.map((ei, i) => {
+              const desc = ei.description || ei.evidence_type || "Evidence";
+              const shortDesc = desc.length > 80 ? desc.slice(0, 77) + "\u2026" : desc;
+              const emoji = evidenceEmoji[ei.evidence_type] || "\uD83D\uDD39";
+              return (
+                <div
+                  key={i}
+                  className="flex min-w-0 items-start gap-1.5 text-xs"
+                  style={{ color: "var(--muted-strong)" }}
+                  title={desc}
+                >
+                  <span className="shrink-0">{emoji}</span>
+                  <span className="min-w-0 break-words">{shortDesc}</span>
+                </div>
+              );
+            })}
+          </div>
           {remainingEvidence > 0 && (
             <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
-              +{remainingEvidence} more
+              +{remainingEvidence} more evidence items
             </div>
           )}
         </div>
@@ -1243,23 +1271,36 @@ function CaseDraftCard({ draft }: { draft: CaseDraftItem }) {
             Timeline ({timeline.length})
           </div>
           <div className="min-w-0 space-y-1">
-            {visibleTimeline.map((ti, i) => (
-              <div key={i} className="flex min-w-0 gap-2 text-xs" style={{ color: "var(--muted-strong)" }}>
-                <span className="shrink-0 font-mono text-[10px]" style={{ color: "var(--muted)" }}>
-                  {ti.order ?? i + 1}.
-                </span>
-                {ti.timestamp && (
-                  <span className="shrink-0 text-[10px]" style={{ color: "var(--muted)" }}>
-                    {ti.timestamp}
+            {visibleTimeline.map((ti, i) => {
+              const desc = ti.description || "Event";
+              const shortId = ti.event_id ? ti.event_id.slice(0, 8) : null;
+              return (
+                <div key={i} className="flex min-w-0 items-baseline gap-1.5 text-xs" style={{ color: "var(--muted-strong)" }}>
+                  <span className="shrink-0 font-mono text-[10px]" style={{ color: "var(--muted)" }}>
+                    {ti.order ?? i + 1}.
                   </span>
-                )}
-                <span className="min-w-0 break-words">{ti.description || "Event"}</span>
-              </div>
-            ))}
+                  {ti.timestamp && (
+                    <span className="shrink-0 font-mono text-[10px]" style={{ color: "var(--muted)" }}>
+                      {ti.timestamp}
+                    </span>
+                  )}
+                  <span className="min-w-0 truncate" title={desc}>{desc}</span>
+                  {shortId && (
+                    <span
+                      className="shrink-0 rounded border px-1 py-0.5 font-mono text-[9px]"
+                      style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+                      title={ti.event_id}
+                    >
+                      {shortId}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
           {remainingTimeline > 0 && (
             <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
-              +{remainingTimeline} more
+              +{remainingTimeline} more timeline events
             </div>
           )}
         </div>
@@ -1304,13 +1345,18 @@ function CaseDraftCard({ draft }: { draft: CaseDraftItem }) {
       {questions.length > 0 && (
         <div className="min-w-0">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.18em]" style={{ color: "var(--muted)" }}>
-            Analyst Questions
+            Analyst Questions ({questions.length})
           </div>
-          <ul className="min-w-0 list-inside list-disc space-y-1 text-sm" style={{ color: "var(--muted-strong)" }}>
-            {questions.map((q, i) => (
+          <ul className="min-w-0 list-inside list-disc space-y-1 text-xs" style={{ color: "var(--muted-strong)" }}>
+            {questions.slice(0, CASE_QUESTIONS_LIMIT).map((q, i) => (
               <li key={i} className="min-w-0 break-words">{q}</li>
             ))}
           </ul>
+          {questions.length > CASE_QUESTIONS_LIMIT && (
+            <div className="mt-1 text-[11px]" style={{ color: "var(--muted)" }}>
+              +{questions.length - CASE_QUESTIONS_LIMIT} more questions
+            </div>
+          )}
         </div>
       )}
     </div>
